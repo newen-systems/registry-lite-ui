@@ -8,7 +8,7 @@ let updated = null;
 
 // Preferences only, no data or secrets. Storage may be blocked, so every access is guarded.
 // expanded and selected are the tree state (node ids and the location hash), sidebar is its width in px.
-const DEFAULTS = { theme: "system", sort: "recent", live: true, interval: 30, pageSize: 50, runtime: "podman", showEmpty: false, tool: "pip", os: "linux", show: "all", sidebar: 280, selected: "/recent", expanded: [] };
+const DEFAULTS = { theme: "system", sort: "name", sortSet: false, live: true, interval: 30, pageSize: 50, runtime: "podman", showEmpty: false, tool: "pip", os: "linux", show: "all", sidebar: 280, selected: "/recent", expanded: [] };
 const CHOICES = { theme: ["system", "light", "dark"], sort: ["recent", "name"], runtime: ["podman", "docker"], tool: ["pip", "uv"], os: ["linux", "windows"], show: ["all", "containers", "python"], interval: [10, 30, 60, 300], pageSize: [25, 50, 100, 200] };
 const MAX_EXPANDED = 500;
 const SIDEBAR = [180, 640];
@@ -29,6 +29,7 @@ function loadPrefs() {
     for (const k of Object.keys(DEFAULTS)) {
       if (prefValid(k, p[k])) prefs[k] = p[k];
     }
+    if (!prefs.sortSet) prefs.sort = DEFAULTS.sort; // savePrefs writes every key, so a stored sort is a choice only once the user has picked one
   } catch (e) { /* blocked or corrupt: use defaults */ }
 }
 function savePrefs() { try { localStorage.setItem("registry-lite-ui", JSON.stringify(prefs)); } catch (e) { /* blocked */ } }
@@ -1779,7 +1780,7 @@ function helpPanel() {
 }
 
 // ---- Settings: one panel, changes apply as you make them ----------------------------------------------------------------
-const SETTING_KEYS = ["theme", "runtime", "tool", "os", "show", "sort", "live", "interval", "pageSize", "showEmpty"];
+const SETTING_KEYS = ["theme", "runtime", "tool", "os", "show", "sort", "sortSet", "live", "interval", "pageSize", "showEmpty"];
 function segmented(labelId, options, key, apply) { // options: [value, text, iconName?]. Arrow keys move and select, like radio buttons.
   const box = el("div", { className: "seg", role: "radiogroup", "aria-labelledby": labelId });
   const draw = () => box.replaceChildren(...options.map(([v, text, ico]) => el("button", {
@@ -1820,7 +1821,7 @@ function lifecycleRow() { // read only: the stages are set by the server
 }
 function applyPrefs(change) { // save a change and do what it needs, at once
   const before = { ...prefs };
-  Object.assign(prefs, change);
+  Object.assign(prefs, change, "sort" in change && !("sortSet" in change) ? { sortSet: true } : {}); // Reset to defaults sends sortSet false
   savePrefs();
   if (prefs.theme !== before.theme) applyTheme();
   if (prefs.live !== before.live) startLive();
