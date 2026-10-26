@@ -857,7 +857,8 @@ function orderedItems(spec, st, list) {
 const countText = (shownN, total, all, filtered) => `Showing ${shownN} of ${total}` + (filtered ? ` matching, ${all} in all` : "");
 const noMatches = (cols) => el("tr", {}, el("td", { colSpan: cols, className: "mut", textContent: "No matches." }));
 // spec: {id, items, columns, defaultCmp, tie, match(item, lowerText), row(item) -> tr, placeholder, onDraw(visibleItems),
-// lateKeys (columns whose data arrives after drawing) and onLate(redraw) to be told how to redraw once it has}
+// lateKeys (columns whose data arrives after drawing) and onLate(redraw) to be told how to redraw once it has,
+// lead (a header cell put before the columns, for a column the rows add themselves)}
 function listView(spec) {
   const st = stateOf(spec.id);
   const input = el("input", { type: "search", className: "listfilter", placeholder: spec.placeholder, "aria-label": spec.placeholder, value: st.filter, autocomplete: "off", spellcheck: false });
@@ -868,8 +869,8 @@ function listView(spec) {
     const list = text ? spec.items.filter((i) => spec.match(i, text)) : spec.items;
     const page = st.shown || prefs.pageSize;
     const visible = orderedItems(spec, st, list).slice(0, page);
-    head.replaceChildren(...spec.columns.map((c) => sortHeader(st, c, draw)));
-    body.replaceChildren(...(visible.length ? visible.map((item) => spec.row(item)) : [noMatches(spec.columns.length)]));
+    head.replaceChildren(...(spec.lead ? [spec.lead] : []), ...spec.columns.map((c) => sortHeader(st, c, draw)));
+    body.replaceChildren(...(visible.length ? visible.map((item) => spec.row(item)) : [noMatches(spec.columns.length + (spec.lead ? 1 : 0))]));
     count.textContent = countText(visible.length, list.length, spec.items.length, !!text);
     const left = list.length - visible.length;
     more.replaceChildren(...(left > 0 ? [el("button", { type: "button", textContent: `Show more (${left} left)`, onclick: () => { st.shown = page + prefs.pageSize; draw(); } })] : []));
@@ -940,17 +941,56 @@ function tagRow(t) { // a table row for a tag, whose kind, size, platforms and b
 }
 function tagsList(n) {
   lazyReset();
+  const pick = canWrite() ? pickBar(n) : null; // no checkboxes for a user who cannot delete
   const rowsOf = new Map();
   const entry = (t) => {
-    if (!rowsOf.has(t)) rowsOf.set(t, tagRow(t));
+    if (!rowsOf.has(t)) {
+      const r = tagRow(t);
+      if (pick) r.tr.prepend(el("td", { className: "pick" }, pick.box(t)));
+      rowsOf.set(t, r);
+    }
     return rowsOf.get(t);
   };
-  return listView({
+  const list = listView({
     id: "tags:" + n.path, items: n.tagList, columns: TAG_COLUMNS, defaultCmp: tagDefault, tie: (a, b) => tagCompare(b.tag, a.tag),
-    match: (t, text) => t.tag.toLowerCase().includes(text), placeholder: "Filter tags",
-    row: (t) => entry(t).tr, onDraw: (vis) => vis.forEach((t) => lazyWatch(entry(t))),
+    match: (t, text) => t.tag.toLowerCase().includes(text), placeholder: "Filter tags", lead: pick?.head,
+    row: (t) => entry(t).tr, onDraw: (vis) => { vis.forEach((t) => lazyWatch(entry(t))); pick?.shown(vis); },
     lateKeys: ["size", "platforms", "created"], onLate: (redraw) => { lazy.redraw = redraw; },
   });
+  return pick ? [pick.bar, ...list] : list;
+}
+
+// Bulk delete: a checkbox per tag row, one for every row shown, and a bar with the count and Delete selected.
+// The picked tags are kept per repository while the page is open, and a tag that is gone drops out.
+function pickBar(n) {
+  const st = stateOf("tags:" + n.path);
+  st.picked ??= new Set();
+  for (const tag of st.picked) if (!n.tagMap.has(tag)) st.picked.delete(tag);
+  const max = cfg.maxBatch || 100;
+  const boxes = new Map();
+  let vis = [];
+  const all = el("input", { type: "checkbox", "aria-label": "Select every tag shown" });
+  const count = el("span", { className: "mut", role: "status" });
+  const go = el("button", { type: "button", className: "danger", textContent: "Delete selected", onclick: () => void deleteTags(n, n.tagList.filter((t) => st.picked.has(t.tag))) });
+  const clear = el("button", { type: "button", className: "linkbtn", textContent: "Clear selection", onclick: () => { st.picked.clear(); update(); all.focus(); } });
+  function update() {
+    const on = vis.filter((t) => st.picked.has(t.tag)).length;
+    all.checked = vis.length > 0 && on === vis.length;
+    all.indeterminate = on > 0 && on < vis.length;
+    for (const [tag, b] of boxes) b.checked = st.picked.has(tag);
+    const k = st.picked.size;
+    count.textContent = k ? `${plural(k, "tag")} selected` + (k > max ? `, at most ${max} at once` : "") : "Select tags to delete several at once";
+    go.disabled = !k || k > max;
+    clear.hidden = !k;
+  }
+  all.onchange = () => { for (const t of vis) { if (all.checked) st.picked.add(t.tag); else st.picked.delete(t.tag); } update(); };
+  const box = (t) => {
+    const b = el("input", { type: "checkbox", "aria-label": `Select ${t.tag}`, checked: st.picked.has(t.tag) });
+    b.onchange = () => { if (b.checked) st.picked.add(t.tag); else st.picked.delete(t.tag); update(); };
+    boxes.set(t.tag, b);
+    return b;
+  };
+  return { bar: el("div", { className: "bar bulk" }, count, go, clear), head: el("th", { className: "pick" }, all), box, shown: (v) => { vis = v; update(); } };
 }
 
 function childrenList(n) {
@@ -1345,6 +1385,98 @@ function scriptSection(o, children) { // children: a function that says whether 
     el("p", { className: "mut", textContent: "The call keeps the same guards as the button: the CSRF token, read-only mode and the refusal to delete a child of an index. With an auth override in front of the UI it needs credentials too." }), holder);
   box.redraw = draw;
   return box;
+}
+
+// Delete several tags: one confirm that lists them and the other tags that share their digests, one call, then what happened to each.
+async function deleteTags(n, picked) {
+  const v = await confirmDeleteTags(n, picked);
+  if (!v) return;
+  let results;
+  try {
+    banner("");
+    results = (await api("/api/delete-tags", { repo: n.path, tags: picked.map((t) => t.tag), children: v.children })).results;
+  } catch (e) { banner(e.message, true); return; }
+  const st = stateOf("tags:" + n.path);
+  for (const r of results) if (r.status !== "failed") st.picked.delete(r.tag); // a failed tag stays picked, to retry or look at
+  await touch(n.path).catch(() => { /* the next sync shows it */ });
+  await deleteResults(n.path, results);
+  await renderPane();
+  $("main").querySelector(".bulk button:not(:disabled), .pick input")?.focus();
+}
+const MAX_NAMED = 30; // tag names shown in a dialog before "and N more"
+function chipsOf(tags) {
+  const shown = tags.slice(0, MAX_NAMED).map((t) => el("span", { className: "tagchip", textContent: t }));
+  return el("div", { className: "tagchips" }, ...shown, ...(tags.length > MAX_NAMED ? [el("span", { className: "mut", textContent: `and ${tags.length - MAX_NAMED} more` })] : []));
+}
+const namesOf = (tags) => tags.slice(0, MAX_NAMED).join(", ") + (tags.length > MAX_NAMED ? ` and ${tags.length - MAX_NAMED} more` : "");
+// What deleting by digest does to the tag list the pane holds: tags not picked that go too, and picked tags that share one digest.
+function sharedDigests(n, picked) {
+  const names = new Set(picked.map((t) => t.tag)), digests = new Set(picked.map((t) => t.digest));
+  const extra = n.tagList.filter((t) => digests.has(t.digest) && !names.has(t.tag)).map((t) => t.tag);
+  const per = new Map();
+  for (const t of picked) per.set(t.digest, [...(per.get(t.digest) || []), t.tag]);
+  return { extra, groups: [...per.values()].filter((g) => g.length > 1) };
+}
+// Resolves to {children} or null.
+function confirmDeleteTags(n, picked) {
+  return new Promise((resolve) => {
+    let result = null, children = false;
+    const { extra, groups } = sharedDigests(n, picked);
+    const anyIndex = picked.some((t) => t.index);
+    const sw = el("button", { type: "button", role: "switch", className: "switch", "aria-labelledby": "b-sw", "aria-checked": "false",
+      onclick: () => { children = !children; sw.setAttribute("aria-checked", String(children)); } });
+    const total = picked.length + extra.length;
+    const go = el("button", { type: "button", className: "primary dangerfill", textContent: `Delete ${plural(picked.length, "tag")}` });
+    go.onclick = () => { result = { children }; dlg.close(); };
+    const cancel = el("button", { type: "button", textContent: "Cancel", onclick: () => dlg.close() });
+    const warn = [];
+    if (extra.length) warn.push(el("p", { className: "dlg-warn", role: "alert", textContent: `The registry deletes by digest, so ${plural(extra.length, "tag")} you did not select ${extra.length === 1 ? "goes" : "go"} too, sharing a digest with a selected tag: ${namesOf(extra)}.` }));
+    for (const g of groups.slice(0, 5)) warn.push(el("p", { className: "dlg-warn", textContent: `${g.length === 2 ? g.join(" and ") : namesOf(g)} share one digest. It is deleted once, and each of them is reported deleted.` }));
+    if (groups.length > 5) warn.push(el("p", { className: "dlg-warn", textContent: `${groups.length - 5} more groups of selected tags share a digest.` }));
+    const dlg = el("dialog", { className: "settings transfer", "aria-labelledby": "b-title", "aria-describedby": "b-scope" },
+      el("div", { className: "shead" }, el("h2", { id: "b-title", textContent: `Delete ${plural(picked.length, "tag")}` }),
+        el("button", { type: "button", className: "iconbtn", "aria-label": "Close", onclick: () => dlg.close() }, icon("close"))),
+      el("div", { className: "sbody" },
+        el("div", { className: "srccard" }, el("div", { className: "srcname" }, el("span", { className: "ico" }, icon("whale", "whale")), el("code", { textContent: n.path })),
+          el("div", { className: "srcmeta mut" }, el("span", { textContent: `${plural(picked.length, "tag")} selected` }), el("span", { textContent: `${plural(new Set(picked.map((t) => t.digest)).size, "digest")}` }), el("span", { textContent: `${plural(total, "tag")} removed in all` }))),
+        ...warn,
+        el("p", { className: "scope", id: "b-scope", textContent: `Deletes the manifest of each tag from ${n.path} only, with the same checks as a single delete. Other repositories are not affected.` }),
+        el("div", { className: "xlabel", textContent: "Selected tags" }), chipsOf(picked.map((t) => t.tag)),
+        ...(anyIndex ? [el("div", { className: "srow" }, switchLabel(sw, el("div", { className: "slabel", id: "b-sw", textContent: "Also delete platform images" }),
+          el("div", { className: "sdesc", textContent: "For each selected index, the children that no other tag in this repository uses." })), el("div", { className: "sctl" }, sw))] : []),
+        el("p", { className: "mut", textContent: "A tag whose manifest a tagged index uses as a platform is refused and reported, as a single delete is. Disk space is freed by garbage collection, not by this action." })),
+      el("div", { className: "sfoot" }, cancel, go));
+    dlg.addEventListener("click", (e) => { if (e.target === dlg) dlg.close(); });
+    dlg.addEventListener("close", () => { dlg.remove(); resolve(result); });
+    document.body.append(dlg);
+    dlg.showModal();
+    cancel.focus(); // several manifests go at once: Enter does not delete
+  });
+}
+const RESULT_TEXT = { deleted: "Deleted", failed: "Failed", skipped: "Skipped" };
+const RESULT_CLASS = { deleted: "new", failed: "deleted", skipped: "mut" };
+function resultDetail(r) {
+  if (r.error) return r.error;
+  if (r.with) return `Same digest as ${r.with}`;
+  return r.deleted?.length > 1 ? `${short(r.digest)}, and ${plural(r.deleted.length - 1, "platform image")}` : short(r.digest);
+}
+function deleteResults(repo, results) {
+  return new Promise((resolve) => {
+    const n = (s) => results.filter((r) => r.status === s).length;
+    const close = el("button", { type: "button", className: "primary", textContent: "Close", onclick: () => dlg.close() });
+    const rows = results.map((r) => el("tr", {}, el("td", {}, code(r.tag)), el("td", {}, el("span", { className: "badge " + RESULT_CLASS[r.status], textContent: RESULT_TEXT[r.status] })), el("td", { className: "mut", textContent: resultDetail(r) })));
+    const dlg = el("dialog", { className: "settings transfer", "aria-labelledby": "r-title", "aria-describedby": "r-sum" },
+      el("div", { className: "shead" }, el("h2", { id: "r-title", textContent: n("failed") ? "Some tags were not deleted" : "Tags deleted" }),
+        el("button", { type: "button", className: "iconbtn", "aria-label": "Close", onclick: () => dlg.close() }, icon("close"))),
+      el("div", { className: "sbody" },
+        el("p", { className: "scope", id: "r-sum", textContent: `${repo}: ${n("deleted")} deleted, ${n("failed")} failed, ${n("skipped")} skipped.` }),
+        el("table", { className: "results" }, el("thead", {}, el("tr", {}, el("th", { textContent: "Tag" }), el("th", { textContent: "Result" }), el("th", { textContent: "Detail" }))), el("tbody", {}, ...rows))),
+      el("div", { className: "sfoot" }, el("span"), close));
+    dlg.addEventListener("close", () => { dlg.remove(); resolve(); });
+    document.body.append(dlg);
+    dlg.showModal();
+    close.focus();
+  });
 }
 
 // Delete: says what goes and what does not. o: {repo, ref, digest, m (a fresh manifest, with its tags), block, info (the /api/parents answer)}.

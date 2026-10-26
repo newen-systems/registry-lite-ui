@@ -4,6 +4,11 @@ registry-lite-ui is a web UI for a plain `registry:2` that browses, copies, move
 
 `podman-compose up -d` with `compose.yml` (registry and UI), or `podman-compose -f compose.ui.yml up -d` with `REGISTRY_URL` set for a registry that already runs. `docker compose` works the same way. Pin `UI_IMAGE` to a version or a digest in your `.env`.
 
+## Changes in 0.2.4
+
+- Delete several tags at once. The tag list has a checkbox per row and one for every row shown, a count, and Delete selected. One dialog lists the tags, warns about tags that go too because they share a digest with a selected one, and offers to delete platform images when an index is selected. A second dialog lists each tag as deleted, skipped or failed with the reason.
+- The new `POST /api/delete-tags` takes `{"repo", "tags", "children"}`, at most 100 tags. Each digest is deleted once, through the same checks as `/api/delete`: read-only mode, the login behind an auth proxy, the CSRF token, and the refusal to delete a platform of a tagged index. Indexes go before their children, so selecting both works.
+
 ## Changes in 0.2.3
 
 - Fixed: changing the default sort in Settings did not reorder the PyPI packages in the tree until something was clicked. It now applies at once.

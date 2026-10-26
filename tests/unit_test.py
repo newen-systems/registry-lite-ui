@@ -1276,6 +1276,134 @@ class Routes(unittest.TestCase):
             self.post["/api/copy"]({"src": "a/app"})
 
 
+class DeleteTags(unittest.TestCase):
+    """Several tags in one call: each digest goes through delete() once, with all its checks."""
+    def client(self, tags=None):
+        class C(FakeClient):
+            """A registry that forgets what is deleted. 1.36 and latest share the index a; certcheck is its child b; solo is d."""
+            def __init__(self):
+                super().__init__()
+                self.m[D("d")] = (self.m[D("b")][0], IMG, D("d"))
+                self.refs, self.gone = tags or {"1.36": D("a"), "latest": D("a"), "certcheck": D("b"), "solo": D("d")}, set()
+            delete_enabled = lambda self: True  # noqa: E731
+            tags = lambda self, repo: [t for t, d in self.refs.items() if d not in self.gone]  # noqa: E731
+
+            def manifest(self, repo, ref, head=False):
+                digest = self.refs.get(ref, ref)
+                if digest in self.gone or digest not in self.m:
+                    raise R.RegistryError(404, "registry said 404 MANIFEST_UNKNOWN: manifest unknown")
+                return self.m[digest]
+
+            def call(self, method, path, headers=None, body=None, ok=(200,)):
+                super().call(method, path)
+                if method == "DELETE":
+                    self.gone.add(path.rsplit("/", 1)[1])
+                return 202, {}, b""
+        return C()
+
+    def test_tags_on_one_digest_are_one_delete(self):
+        c = self.client()
+        out = R.delete_tags(c, "test/busybox", ["1.36", "latest"])
+        self.assertEqual([(r["tag"], r["status"]) for r in out], [("1.36", "deleted"), ("latest", "deleted")])
+        self.assertEqual((out[0]["deleted"], out[1]["with"]), ([D("a")], "1.36"))  # the second tag is not an error
+        self.assertEqual([p for m, p in c.calls if m == "DELETE"], [f"/v2/test/busybox/manifests/{D('a')}"])
+
+    def test_partial_failure_and_a_missing_tag(self):
+        c = self.client()
+        out = R.delete_tags(c, "test/busybox", ["certcheck", "solo", "nope"])
+        by = {r["tag"]: r for r in out}
+        self.assertEqual([r["tag"] for r in out], ["certcheck", "solo", "nope"])  # in the order asked
+        self.assertEqual(by["certcheck"]["status"], "failed")  # a child of the tagged index 1.36: refused as a single delete is
+        self.assertIn("1.36", by["certcheck"]["error"])
+        self.assertEqual((by["solo"]["status"], by["solo"]["deleted"]), ("deleted", [D("d")]))
+        self.assertEqual((by["nope"]["status"], by["nope"]["error"]), ("skipped", "tag not found"))
+        self.assertNotIn(D("b"), c.gone)
+
+    def test_an_index_goes_before_its_selected_child(self):
+        c = self.client()
+        out = R.delete_tags(c, "test/busybox", ["certcheck", "1.36", "latest"])
+        self.assertEqual([r["status"] for r in out], ["deleted", "deleted", "deleted"])
+        self.assertEqual([p.rsplit("/", 1)[1] for m, p in c.calls if m == "DELETE"], [D("a"), D("b")])
+
+    def test_shared_digest_shares_a_failure(self):
+        c = self.client({"a": D("b"), "b": D("b"), "idx": D("a")})
+        out = R.delete_tags(c, "test/busybox", ["a", "b"])
+        self.assertEqual([r["status"] for r in out], ["failed", "failed"])
+        self.assertEqual(out[0]["error"], out[1]["error"])
+        self.assertFalse([m for m, _ in c.calls if m == "DELETE"])
+
+    def test_children_are_passed_on(self):
+        c = self.client({"1.36": D("a")})
+        self.assertEqual(R.delete_tags(c, "test/busybox", ["1.36"], with_children=True)[0]["deleted"], [D("a"), D("b"), D("c")])
+
+    def test_batch_limit_and_names(self):
+        c = self.client()
+        for bad in ([], ["x"] * (R.MAX_BATCH + 1), "latest", [1], ["a/b"], [D("a")], ["-x"]):
+            with self.assertRaises(R.RegistryError, msg=bad) as e:
+                R.delete_tags(c, "test/busybox", bad)
+            self.assertEqual(e.exception.status, 400)
+        self.assertEqual(c.calls, [])  # refused before any registry call
+        with self.assertRaises(R.RegistryError):
+            R.delete_tags(c, "Bad/Repo", ["latest"])
+        self.assertEqual(len(R.delete_tags(c, "test/busybox", ["solo"] * R.MAX_BATCH)), 1)  # a repeated tag is one item
+
+    def test_deletion_disabled_refuses_the_whole_batch(self):
+        c = self.client()
+        c.delete_enabled = lambda: False
+        with self.assertRaises(R.RegistryError) as e:
+            R.delete_tags(c, "test/busybox", ["solo"])
+        self.assertEqual(e.exception.status, 405)
+        self.assertEqual(c.calls, [])
+
+    def test_route_wakes_the_poller_once(self):
+        cfg = S.Config({})
+        cfg.client = self.client()
+        woken = []
+        cfg.poller = type("Poller", (), {"wake": lambda self: woken.append(1)})()
+        get, post = S.routes(cfg)
+        self.assertEqual(get["/api/config"]({})["maxBatch"], R.MAX_BATCH)  # the UI caps a selection at the same number
+        out = post["/api/delete-tags"]({"repo": "test/busybox", "tags": ["solo", "1.36"], "children": "true"})
+        self.assertEqual([r["status"] for r in out["results"]], ["deleted", "deleted"])
+        self.assertEqual(out["results"][1]["deleted"], [D("a")])  # the string "true" is not true
+        self.assertEqual(woken, [1])
+
+    def test_guards_are_the_same_as_single_delete(self):
+        def serve(env):
+            cfg = S.Config(env)
+            cfg.client = self.client()
+            srv = S.BoundedServer(("127.0.0.1", 0), S.make_handler(cfg), 8)
+            threading.Thread(target=srv.serve_forever, daemon=True).start()
+            self.addCleanup(srv.server_close)
+            self.addCleanup(srv.shutdown)
+            return cfg, srv.server_address[1]
+
+        def post(port, body, token, extra="", length=None):
+            c = socket.create_connection(("127.0.0.1", port), timeout=5)
+            self.addCleanup(c.close)
+            c.sendall((f"POST /api/delete-tags HTTP/1.0\r\nHost: t\r\nContent-Type: application/json\r\nX-CSRF-Token: {token}\r\n"
+                       f"Content-Length: {length or len(body)}\r\n{extra}\r\n").encode() + body)
+            out = b""
+            while chunk := c.recv(4096):
+                out += chunk
+            head, _, rest = out.partition(b"\r\n\r\n")
+            return int(head.split(b" ")[1]), json.loads(rest)
+        body = json.dumps({"repo": "test/busybox", "tags": ["solo"]}).encode()
+        cfg, port = serve({"UI_READONLY": "true"})
+        self.assertEqual(post(port, body, cfg.csrf)[0], 403)
+        self.assertNotIn(D("d"), cfg.client.gone)
+        cfg, port = serve({"UI_LOGIN_URL": "/oauth2/start"})
+        self.assertEqual(post(port, body, cfg.csrf)[0], 401)  # anonymous behind the auth proxy
+        self.assertEqual(post(port, body, "wrong", "X-Forwarded-Email: a@example.internal\r\n")[0], 403)
+        self.assertNotIn(D("d"), cfg.client.gone)
+        status, out = post(port, body, cfg.csrf, "X-Forwarded-Email: a@example.internal\r\n")
+        self.assertEqual((status, out["results"][0]["status"]), (200, "deleted"))
+        cfg, port = serve({})
+        full = json.dumps({"repo": "test/busybox", "tags": [f"t{i:03d}" + "x" * 124 for i in range(R.MAX_BATCH)]}).encode()
+        self.assertGreater(len(full), S.MAX_BODY)  # a full batch of long names fits the larger limit of this route only
+        self.assertEqual(post(port, full, cfg.csrf)[0], 200)
+        self.assertEqual(post(port, b"{}", cfg.csrf, length=S.MAX_BATCH_BODY + 1)[0], 413)  # refused from the header, before the body is read
+
+
 class Stream(unittest.TestCase):
     def test_refused_mount_streams_the_blob(self):
         calls = []
