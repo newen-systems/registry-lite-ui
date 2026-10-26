@@ -253,7 +253,7 @@ def routes(cfg):
                 "children": len(kids), "removable": len(kids - kept)}
 
     def recent(q):
-        return cfg.state.snapshot(max(0, min(int(q.get("limit", ["200"])[0]), cfg.state.max_events)))
+        return {**cfg.state.snapshot(max(0, min(int(q.get("limit", ["200"])[0]), cfg.state.max_events))), "checkedAgo": checked_ago(cfg)}
 
     def woken(fn):  # a change made here shows up in Recent without waiting for the next poll
         def run(b):
@@ -326,6 +326,12 @@ def routes(cfg):
     return get, post
 
 
+def checked_ago(cfg):
+    """Seconds since the last walk of the registry finished without an error, or None. An age, so the browser's clock does not matter."""
+    checked = cfg.poller.checked if cfg.poller else None
+    return round(max(0, time.time() - checked), 1) if checked else None
+
+
 def user_of(headers):
     """The user the auth proxy logged in, from the headers oauth2-proxy sets. Empty when anonymous."""
     return headers.get("X-Forwarded-Email") or headers.get("X-Forwarded-User") or ""
@@ -386,7 +392,7 @@ class Handler(BaseHTTPRequestHandler):
                 poll = self.cfg.poller.next_poll if self.cfg.poller else None
                 if poll and poll != sent:  # when the registry is walked next, for the countdown line
                     sent = poll
-                    self.wfile.write(b"event: poll\ndata: %s\n\n" % json.dumps({"left": round(max(0, poll[0] - time.time()), 1), "wait": poll[1]}).encode())
+                    self.wfile.write(b"event: poll\ndata: %s\n\n" % json.dumps({"left": round(max(0, poll[0] - time.time()), 1), "wait": poll[1], "checkedAgo": checked_ago(self.cfg)}).encode())
                     self.wfile.flush()
                 if watch_pypi and self.cfg.pypi.catalog.seq != pseq:  # a named event, so the browser reloads only the PyPI list
                     pseq = self.cfg.pypi.catalog.seq

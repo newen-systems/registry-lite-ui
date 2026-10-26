@@ -1450,7 +1450,7 @@ class DeleteTags(unittest.TestCase):
 class Countdown(unittest.TestCase):
     def test_stream_says_when_the_next_walk_is(self):
         cfg = S.Config({})
-        cfg.poller = type("P", (), {"next_poll": (time.time() + 5, 5), "healthy": lambda self: True})()
+        cfg.poller = type("P", (), {"next_poll": (time.time() + 5, 5), "checked": time.time() - 2, "healthy": lambda self: True})()
         srv = S.BoundedServer(("127.0.0.1", 0), S.make_handler(cfg), 8)
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         self.addCleanup(srv.server_close)
@@ -1464,6 +1464,8 @@ class Countdown(unittest.TestCase):
         poll = json.loads(out.split(b"event: poll\ndata: ")[1].split(b"\n")[0])
         self.assertEqual(poll["wait"], 5)
         self.assertTrue(3 < poll["left"] <= 5)
+        self.assertTrue(2 <= poll["checkedAgo"] < 4)  # the footer's "checked" time moves with every walk
+        self.assertTrue(2 <= S.routes(cfg)[0]["/api/recent"]({})["checkedAgo"] < 4)
 
 
 class Stream(unittest.TestCase):

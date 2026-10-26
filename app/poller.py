@@ -225,6 +225,7 @@ class Poller(threading.Thread):
         self.throttle, self.last_tick = Throttle(), time.monotonic()
         self.pending = {}  # repository in the catalog whose tag list is 404 (a push in progress) -> when first seen
         self.next_poll = None  # (wall time of the next walk, seconds waited for it), for the browsers' countdown
+        self.checked = None  # wall time the last walk finished without an error
 
     def healthy(self):
         return time.monotonic() - self.last_tick < 3 * max(self.interval, 300)
@@ -326,6 +327,7 @@ class Poller(threading.Thread):
             try:
                 self.cycle()
                 fails = 0
+                self.checked = time.time()
                 self.throttle.ok("registry")
             except Exception as e:  # the poller must never die
                 fails += 1

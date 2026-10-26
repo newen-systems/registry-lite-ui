@@ -4,7 +4,7 @@ const $ = (id) => document.getElementById(id);
 let cfg = {};
 let recent = { events: [], lastChanged: {}, persistent: false, seq: 0 };
 let shown = 0; // rows revealed in the current list
-let updated = null;
+let checked = null; // when the server last finished a walk of the registry
 
 // Preferences only, no data or secrets. Storage may be blocked, so every access is guarded.
 // expanded and selected are the tree state (node ids and the location hash), sidebar is its width in px.
@@ -1210,8 +1210,6 @@ async function renderPane(force) { // force: a setting changed under an open pan
   const seq = ++paneSeq, n = tree.sel === "recent" ? RECENT : tree.byId.get(tree.sel);
   try {
     await drawPane(n, seq);
-    updated = new Date();
-    liveLabel();
   } catch (e) { if (seq === paneSeq) banner(e.message, true); }
 }
 
@@ -1289,10 +1287,18 @@ let es = null;
 let state = "off";
 let lastSeq = null;
 let syncing = null, again = false;
+// The time of the last completed check of the registry, which moves every walk. The last change seen is in the tooltip.
 function liveLabel() {
-  const t = updated ? ` updated ${updated.toLocaleTimeString()}` : "";
+  const t = checked ? `, checked ${checked.toLocaleTimeString()}` : "";
   const label = { live: "live", off: "auto-refresh off" }[state] || "reconnecting";
   $("live").textContent = label + t;
+  const last = recent.events[0]?.t;
+  $("live").title = last ? `Last change seen ${new Date(last * 1000).toLocaleString()}` : "No change seen yet";
+}
+function setChecked(ago) { // ago: seconds, from the server, or null before its first walk
+  if (ago == null) return;
+  checked = new Date(Date.now() - ago * 1000);
+  liveLabel();
 }
 function sync() {
   if (syncing) { again = true; return syncing; }
@@ -1335,7 +1341,7 @@ async function doSync() {
   renderTree();
   if (pickerSync) pickerSync();
   if (!first && (grew || evs.length || gap)) void renderPane();
-  updated = new Date();
+  setChecked(rc.checkedAgo);
   liveLabel();
 }
 let stale = false;
@@ -1358,7 +1364,7 @@ function startLive() {
     };
     es.onerror = () => { state = "connecting"; liveLabel(); pollCountdown(); }; // the browser reconnects by itself
     es.addEventListener("pypi", () => { if (document.hidden) stale = true; else void pypiSync(); });
-    es.addEventListener("poll", (e) => { try { const p = JSON.parse(e.data); countdown(p.left, p.wait); } catch (err) { /* a bad event: keep the line */ } });
+    es.addEventListener("poll", (e) => { try { const p = JSON.parse(e.data); countdown(p.left, p.wait); setChecked(p.checkedAgo); } catch (err) { /* a bad event: keep the line */ } });
   }
   if (!prefs.live) countdown(0, 0);
   liveLabel();
@@ -1396,7 +1402,7 @@ function startPoll() { // the fallback while the stream is down, every `interval
     pollCountdown();
     if (!prefs.live || document.hidden || modalOpen()) return;
     if (state === "live") return;
-    try { const r = await api("/api/recent?limit=1"); if (r.seq !== lastSeq) void sync(); } catch (e) { /* shown by the next sync() */ }
+    try { const r = await api("/api/recent?limit=1"); setChecked(r.checkedAgo); if (r.seq !== lastSeq) void sync(); } catch (e) { /* shown by the next sync() */ }
     if (cfg.pypi && !pypi.denied) try { const r = await api("/api/pypi/seq"); if (r.seq !== pypi.seq) void pypiSync(); } catch (e) { /* shown by the next pypiSync() */ }
   }, 1000 * pollSecs());
 }

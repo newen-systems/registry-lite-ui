@@ -11,6 +11,7 @@ registry-lite-ui is a web UI for a plain `registry:2` that browses, copies, move
 - The Changed column of a tag list is now Pushed: when the poller saw the tag take its digest.
 - Help shows garbage collection for a compose service too: `docker compose exec <service> registry garbage-collect`, with the service from the new `UI_REGISTRY_SERVICE` (`registry` in `compose.yml`).
 - Delete Python package versions, several at once and with shift-click, from a package's version list. It needs a second GitLab token with the `api` scope in `secrets/gitlab_delete_token` (`compose.pypi-delete.yml`), never the read token. Without it the checkboxes are hidden and `POST /api/pypi/delete` answers 403. The call takes `{"ids"}`, at most 100 upload ids of this index, with the same CSRF, read-only and login checks as a tag delete.
+- Fixed: the header said "live updated" with the time the page last redrew, which stood still while nothing changed. It now says "live, checked" with the time of the last completed walk of the registry, which moves with every walk, and its tooltip gives the last change seen.
 - A thin line under the header runs down to the next refresh: the next walk of the registry, sent on the live stream so it follows `UI_POLL_INTERVAL`, the burst during a push and the back-off, or the fallback poll from Settings while the stream is down.
 
 ## Changes in 0.2.5
