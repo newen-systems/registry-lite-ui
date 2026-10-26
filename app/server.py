@@ -49,6 +49,7 @@ CREATED_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|
 MAX_BODY = 4096  # bytes of JSON accepted on a POST
 MAX_BATCH_BODY = 16384  # for /api/delete-tags: R.MAX_BATCH tag names of up to 128 characters
 HEALTHZ = "/healthz"
+MIN_POLL = 10  # seconds: the floor of UI_POLL_MIN, so viewers can never drive the registry walk faster
 HEADER_SECS, BODY_SECS = 10, 10  # whole-request limits against clients that send a byte at a time
 CSP = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 SECURITY_HEADERS = (("Content-Security-Policy", CSP), ("X-Content-Type-Options", "nosniff"), ("Referrer-Policy", "no-referrer"),
@@ -74,6 +75,9 @@ class Config:
         self.registry_storage = env.get("UI_REGISTRY_STORAGE", "").strip()  # display only: where the registry keeps its data, for the garbage collection command
         if self.registry_storage and not valid_storage(self.registry_storage):
             raise ValueError("UI_REGISTRY_STORAGE must be an absolute path such as /data/registry or a volume name")
+        self.registry_service = env.get("UI_REGISTRY_SERVICE", "").strip()  # display only: the registry's compose service, for the garbage collection command
+        if self.registry_service and not (len(self.registry_service) <= 63 and VOLUME_RE.fullmatch(self.registry_service)):
+            raise ValueError("UI_REGISTRY_SERVICE must be a compose service name such as registry")
         self.registry_host = env.get("UI_REGISTRY_HOST", "").strip()  # what clients type to reach the registry, shown in the pull and push commands
         if self.registry_host and not HOST_RE.fullmatch(self.registry_host):
             raise ValueError("UI_REGISTRY_HOST must be host or host:port, without a scheme or path")
@@ -82,6 +86,7 @@ class Config:
         n = lambda key, default: int(env.get(key, default))  # noqa: E731
         self.max_conn, self.interval, self.max_tags = n("UI_MAX_CONN", 64), n("UI_POLL_INTERVAL", 30), n("UI_POLL_MAX_TAGS", 500)
         self.burst, self.burst_max = n("UI_POLL_BURST", 5), n("UI_POLL_BURST_MAX", 600)  # see poller.Poller
+        self.poll_min = max(MIN_POLL, n("UI_POLL_MIN", MIN_POLL))  # the shortest interval a viewer may ask for
         if self.burst < 0 or self.burst_max < 0:
             raise ValueError("UI_POLL_BURST and UI_POLL_BURST_MAX must be 0 or more seconds")
         self.sse_slots = threading.BoundedSemaphore(n("UI_MAX_SSE", 20))
@@ -250,7 +255,7 @@ def routes(cfg):
                 "children": len(kids), "removable": len(kids - kept)}
 
     def recent(q):
-        return cfg.state.snapshot(max(0, min(int(q.get("limit", ["200"])[0]), cfg.state.max_events)))
+        return {**cfg.state.snapshot(max(0, min(int(q.get("limit", ["200"])[0]), cfg.state.max_events))), "checkedAgo": checked_ago(cfg)}
 
     def woken(fn):  # a change made here shows up in Recent without waiting for the next poll
         def run(b):
@@ -276,8 +281,8 @@ def routes(cfg):
         "/api/config": lambda q: {"csrf": cfg.csrf, "readonly": cfg.readonly, "deleteEnabled": c.delete_enabled(),
                                   "registry": cfg.registry_url,
                                   "registryHost": cfg.registry_host or urllib.parse.urlsplit(cfg.registry_url).netloc,
-                                  "registryHostSet": bool(cfg.registry_host), "environments": cfg.environments, "registryStorage": cfg.registry_storage,
-                                  "version": cfg.version, "revision": cfg.revision, "login": cfg.login_url, "logout": cfg.logout_url, "maxBatch": R.MAX_BATCH,
+                                  "registryHostSet": bool(cfg.registry_host), "environments": cfg.environments, "registryStorage": cfg.registry_storage, "registryService": cfg.registry_service,
+                                  "version": cfg.version, "revision": cfg.revision, "login": cfg.login_url, "logout": cfg.logout_url, "maxBatch": R.MAX_BATCH, "pollInterval": cfg.interval, "pollMin": cfg.poll_min,
                                   "pypi": cfg.pypi.config() if cfg.pypi else None},
         "/api/repos": lambda q: sorted(c.catalog()),
         "/api/tags": tags,
@@ -310,8 +315,23 @@ def routes(cfg):
             except G.GitLabError as e:
                 raise R.RegistryError(e.status, e.message) from None
 
+        def pypi_delete(b):
+            if not y.deleter:
+                raise R.RegistryError(403, "Deleting Python packages is off: GITLAB_DELETE_TOKEN_FILE is not set")
+            try:
+                return {"results": y.delete(b["ids"])}
+            except G.GitLabError as e:
+                raise R.RegistryError(e.status, e.message) from None
+
         get.update({"/api/pypi/packages": pypi_packages, "/api/pypi/files": pypi_files, "/api/pypi/seq": lambda q: {"seq": y.catalog.seq}})
+        post["/api/pypi/delete"] = pypi_delete
     return get, post
+
+
+def checked_ago(cfg):
+    """Seconds since the last walk of the registry finished without an error, or None. An age, so the browser's clock does not matter."""
+    checked = cfg.poller.checked if cfg.poller else None
+    return round(max(0, time.time() - checked), 1) if checked else None
 
 
 def user_of(headers):
@@ -353,8 +373,10 @@ class Handler(BaseHTTPRequestHandler):
     def reply(self, status, obj):
         self.send(status, json.dumps(obj).encode())
 
-    def events(self):
-        """Server-Sent Events: a message with the new sequence number on each change, a comment every 15 s as heartbeat."""
+    def events(self, q=None):
+        """Server-Sent Events: a message with the new sequence number on each change, a comment every 15 s as heartbeat.
+        ?interval=N asks the poller for a walk every N seconds (at least UI_POLL_MIN) while this stream is open."""
+        asked = int((q or {}).get("interval", ["0"])[0] or 0)
         if not self.cfg.sse_slots.acquire(blocking=False):
             self.cfg.errors.error("sse", "live client limit reached, further clients get 503")
             return self.reply(503, {"error": "too many live clients"})
@@ -368,9 +390,16 @@ class Handler(BaseHTTPRequestHandler):
             pseq = self.cfg.pypi.catalog.seq if watch_pypi else 0
             self.wfile.write(b"retry: 5000\n\n")
             self.wfile.flush()
-            idle = 0
+            idle, sent = 0, None
             while not self.hung_up():
+                if asked > 0 and self.cfg.poller:
+                    self.cfg.poller.want(self, asked)  # renewed every second; forgotten when the stream closes
                 now = self.cfg.state.wait(seq, 1)
+                poll = self.cfg.poller.next_poll if self.cfg.poller else None
+                if poll and poll != sent:  # when the registry is walked next, for the countdown line
+                    sent = poll
+                    self.wfile.write(b"event: poll\ndata: %s\n\n" % json.dumps({"left": round(max(0, poll[0] - time.time()), 1), "wait": poll[1], "checkedAgo": checked_ago(self.cfg)}).encode())
+                    self.wfile.flush()
                 if watch_pypi and self.cfg.pypi.catalog.seq != pseq:  # a named event, so the browser reloads only the PyPI list
                     pseq = self.cfg.pypi.catalog.seq
                     self.wfile.write(b"event: pypi\ndata: %d\n\n" % pseq)
@@ -384,6 +413,8 @@ class Handler(BaseHTTPRequestHandler):
         except OSError:
             pass  # client went away
         finally:
+            if self.cfg.poller:
+                self.cfg.poller.forget(self)
             self.cfg.sse_slots.release()
 
     def hung_up(self):
@@ -412,7 +443,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(401, {"error": "log in to make changes"})
         if not csrf_ok(self.cfg, self.headers):
             return self.reply(403, {"error": "CSRF check failed"})
-        self.reply(200, self.post[path](self.read_json(MAX_BATCH_BODY if path == "/api/delete-tags" else MAX_BODY)))
+        self.reply(200, self.post[path](self.read_json(MAX_BATCH_BODY if path in ("/api/delete-tags", "/api/pypi/delete") else MAX_BODY)))
 
     def pypi_locked(self):
         """PyPI data needs a login: an auth proxy is in front, the packages are not public, and this request has no user."""
@@ -435,7 +466,7 @@ class Handler(BaseHTTPRequestHandler):
         if url.path == HEALTHZ:
             return self.health()
         if url.path == "/api/events":
-            return self.events()
+            return self.events(urllib.parse.parse_qs(url.query))
         if url.path == "/api/config":  # who is logged in comes from this request's headers
             out = {**self.get[url.path]({}), "user": user_of(self.headers)}
             if self.pypi_locked():
@@ -513,7 +544,7 @@ def main(env):
     if cert:
         # handshake in the worker thread, so a stalled client cannot block accept()
         httpd.socket = server_context(cert, key).wrap_socket(httpd.socket, server_side=True, do_handshake_on_connect=False)
-    cfg.poller = P.Poller(cfg.client, cfg.state, cfg.interval, cfg.max_tags, cfg.burst, cfg.burst_max)
+    cfg.poller = P.Poller(cfg.client, cfg.state, cfg.interval, cfg.max_tags, cfg.burst, cfg.burst_max, cfg.poll_min)
     cfg.poller.start()
     if cfg.pypi:
         cfg.pypi.poller.start()

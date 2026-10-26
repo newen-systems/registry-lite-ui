@@ -10,6 +10,7 @@ import tempfile
 import threading
 import time
 import unittest
+import unittest.mock
 import urllib.parse
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
@@ -808,6 +809,7 @@ class Resilience(unittest.TestCase):
 
 
 TOKEN = "glpat-test-token-value"
+DELETE_TOKEN = "glpat-test-delete-token"
 
 
 def upload(i, name, version, project=7, created="2026-10-01T10:00:00.000Z"):
@@ -822,6 +824,7 @@ class FakeGitLab(http.server.BaseHTTPRequestHandler):
                 *[upload(10 + i, f"pkg{i}", "1.0") for i in range(247)]]
     calls = []
     public = False  # whether the group index answers without a login
+    deleted = []  # (token, path) of each DELETE
 
     def log_message(self, *a):
         pass
@@ -866,6 +869,16 @@ class FakeGitLab(http.server.BaseHTTPRequestHandler):
             return self.answer(200, b'<a href="https://g/api/v4/projects/7/packages/pypi/files/3b/PyYAML-6.0.2-cp39-cp39-manylinux_2_17_x86_64.manylinux2014_x86_64.whl#sha256=3b" '
                                     b'data-requires-python="&gt;=3.8">x</a><a href="files/1/PyYAML-6.0.2.tar.gz#sha256=1">y</a>', "text/html")
         self.answer(404, {"message": "404 Not Found"})
+
+
+    def do_DELETE(self):
+        FakeGitLab.deleted.append((self.headers.get("PRIVATE-TOKEN"), self.path))
+        if self.headers.get("PRIVATE-TOKEN") != DELETE_TOKEN:
+            return self.answer(403, {"message": "403 Forbidden"})
+        if self.path == "/api/v4/projects/7/packages/2":  # already deleted by someone else
+            return self.answer(404, {"message": "404 Not Found"})
+        self.send_response(204)
+        self.end_headers()
 
 
 def serve_fake(handler):
@@ -993,6 +1006,32 @@ class PypiSource(unittest.TestCase):
         self.assertEqual((status, snap["scope"]), (200, {"kind": "project", "id": 7, "path": "grp/p7"}))
         self.assertEqual({p["project"] for p in snap["packages"]}, {"grp/p7"})  # filled in from the project, which the rows leave out
         self.assertTrue(cfg.pypi.config()["index"].endswith("/api/v4/projects/7/packages/pypi/simple"))
+
+    def test_delete_takes_its_own_token(self):
+        FakeGitLab.deleted = []
+        cfg, _ = self.serve(self.env)  # the read token alone: delete is off, and the read token is never used for it
+        self.assertFalse(cfg.pypi.config()["delete"])
+        _, post = S.routes(cfg)
+        with self.assertRaises(R.RegistryError) as e:
+            post["/api/pypi/delete"]({"ids": [1]})
+        self.assertEqual(e.exception.status, 403)
+        self.assertEqual(FakeGitLab.deleted, [])
+        cfg, _ = self.serve({**self.env, "GITLAB_DELETE_TOKEN": DELETE_TOKEN})
+        self.assertTrue(cfg.pypi.config()["delete"])
+        out = S.routes(cfg)[1]["/api/pypi/delete"]({"ids": [1, 2, 424242, 1]})
+        self.assertEqual([(r["id"], r["status"]) for r in out["results"]], [(1, "deleted"), (2, "skipped"), (424242, "skipped")])
+        self.assertEqual(FakeGitLab.deleted, [(DELETE_TOKEN, "/api/v4/projects/7/packages/1"), (DELETE_TOKEN, "/api/v4/projects/7/packages/2")])
+        self.assertIsNone(cfg.pypi.catalog.upload(1))  # gone from the list before the next read of GitLab
+        for bad in ([], list(range(101)), ["1"], [True], "1"):
+            with self.assertRaises(R.RegistryError, msg=bad):
+                S.routes(cfg)[1]["/api/pypi/delete"]({"ids": bad})
+
+    def test_delete_refused_by_gitlab_says_why(self):
+        cfg, _ = self.serve({**self.env, "GITLAB_DELETE_TOKEN": "a-read-only-token"})
+        out = S.routes(cfg)[1]["/api/pypi/delete"]({"ids": [1]})["results"]
+        self.assertEqual(out[0]["status"], "failed")
+        self.assertIn("api scope and the Maintainer role", out[0]["error"])
+        self.assertIsNotNone(cfg.pypi.catalog.upload(1))
 
     def test_wheel_tags(self):
         d = G.describe("x-1.0-cp312-cp312-manylinux_2_17_x86_64.musllinux_1_1_x86_64.whl")
@@ -1192,6 +1231,11 @@ class Routes(unittest.TestCase):
         for bad in ("/", "rel/path", "/a b", "/a;rm", "$(x)", "/a/../b", "-v", "a:ro", "/a:ro", "/" + "a" * 260, "a`b`"):
             with self.assertRaises(ValueError, msg=bad):
                 S.Config({"UI_REGISTRY_STORAGE": bad})
+        # the registry's compose service, shown in the garbage collection commands
+        self.assertEqual(host({"UI_REGISTRY_SERVICE": "registry_2.a-b"})["registryService"], "registry_2.a-b")
+        for bad in ("-x", "a b", "a;b", "$(x)", "a" * 64):
+            with self.assertRaises(ValueError, msg=bad):
+                S.Config({"UI_REGISTRY_SERVICE": bad})
         # the promote shortcuts: a default list, or the configured one, each a folder name
         self.assertEqual(host({})["environments"], ["dev", "test", "uat", "staging", "prod"])
         self.assertEqual(host({"UI_ENVIRONMENTS": " qa , prod "})["environments"], ["qa", "prod"])
@@ -1402,6 +1446,45 @@ class DeleteTags(unittest.TestCase):
         self.assertGreater(len(full), S.MAX_BODY)  # a full batch of long names fits the larger limit of this route only
         self.assertEqual(post(port, full, cfg.csrf)[0], 200)
         self.assertEqual(post(port, b"{}", cfg.csrf, length=S.MAX_BATCH_BODY + 1)[0], 413)  # refused from the header, before the body is read
+
+
+class Countdown(unittest.TestCase):
+    def test_stream_says_when_the_next_walk_is(self):
+        cfg = S.Config({})
+        cfg.poller = type("P", (), {"next_poll": (time.time() + 5, 5), "checked": time.time() - 2, "healthy": lambda self: True, "forget": lambda self, v: None})()
+        srv = S.BoundedServer(("127.0.0.1", 0), S.make_handler(cfg), 8)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        c = socket.create_connection(("127.0.0.1", srv.server_address[1]), timeout=5)
+        self.addCleanup(c.close)
+        c.sendall(b"GET /api/events HTTP/1.0\r\nHost: t\r\n\r\n")
+        out = b""
+        while b"event: poll" not in out or not out.endswith(b"\n\n"):
+            out += c.recv(4096)
+        poll = json.loads(out.split(b"event: poll\ndata: ")[1].split(b"\n")[0])
+        self.assertEqual(poll["wait"], 5)
+        self.assertTrue(3 < poll["left"] <= 5)
+        self.assertTrue(2 <= poll["checkedAgo"] < 4)  # the footer's "checked" time moves with every walk
+        self.assertTrue(2 <= S.routes(cfg)[0]["/api/recent"]({})["checkedAgo"] < 4)
+
+
+class RefreshInterval(unittest.TestCase):
+    def test_viewers_shorten_the_walk_down_to_the_floor(self):
+        p = P.Poller(FakeRegistry({}), P.State(clock=Clock()), interval=30, minimum=10)
+        p.want("a", 5)  # below the floor: clamped
+        self.assertEqual(p.wait_for(0), 10)
+        self.assertTrue(p.kick.is_set())  # a shorter interval takes effect now, not after the old wait
+        p.want("b", 15)
+        self.assertEqual(p.wait_for(0), 10)  # the shortest wins
+        p.forget("a")  # its stream closed
+        self.assertEqual(p.wait_for(0), 15)
+        p.want("c", 60)
+        self.assertEqual(p.period(), 15)  # never slower than UI_POLL_INTERVAL
+        with unittest.mock.patch("poller.time.monotonic", return_value=time.monotonic() + 31):
+            self.assertEqual(p.wait_for(0), 30)  # b not renewed within two of its intervals: back to the default
+        self.assertEqual(S.Config({"UI_POLL_MIN": "3"}).poll_min, 10)
+        self.assertEqual(S.Config({"UI_POLL_MIN": "20"}).poll_min, 20)
 
 
 class Stream(unittest.TestCase):

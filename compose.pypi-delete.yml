@@ -1,0 +1,10 @@
+# Deleting Python packages, after compose.pypi.yml. The token goes in ./secrets/gitlab_delete_token: one line, readable by
+# uid 65534. A personal, group or project access token with the api scope, whose user has the Maintainer role on every
+# project of the index. It is never the read token, and without this file the UI hides delete and refuses it.
+# A bind mount with `z`, as in compose.pypi.yml, for SELinux hosts.
+services:
+  registry-lite-ui:
+    environment:
+      GITLAB_DELETE_TOKEN_FILE: /run/secrets/gitlab_delete_token
+    volumes:
+      - ./secrets/gitlab_delete_token:/run/secrets/gitlab_delete_token:ro,z

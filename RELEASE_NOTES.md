@@ -4,6 +4,17 @@ registry-lite-ui is a web UI for a plain `registry:2` that browses, copies, move
 
 `podman-compose up -d` with `compose.yml` (registry and UI), or `podman-compose -f compose.ui.yml up -d` with `REGISTRY_URL` set for a registry that already runs. `docker compose` works the same way. Pin `UI_IMAGE` to a version or a digest in your `.env`.
 
+## Changes in 0.2.6
+
+- Shift-click selects a range of tags for Delete selected: every row shown from the last one clicked to this one. A click on a row outside its links ticks it too.
+- Settings sorts repositories, tags and Python packages separately. Repositories and packages sort by Name by default, tags by Recent push, with Version as the other choice. A sort picked in Settings before 0.2.6 is kept for repositories and packages.
+- The Changed column of a tag list is now Pushed: when the poller saw the tag take its digest.
+- Help shows garbage collection for a compose service too: `docker compose exec <service> registry garbage-collect`, with the service from the new `UI_REGISTRY_SERVICE` (`registry` in `compose.yml`).
+- Delete Python package versions, several at once and with shift-click, from a package's version list. It needs a second GitLab token with the `api` scope in `secrets/gitlab_delete_token` (`compose.pypi-delete.yml`), never the read token. Without it the checkboxes are hidden and `POST /api/pypi/delete` answers 403. The call takes `{"ids"}`, at most 100 upload ids of this index, with the same CSRF, read-only and login checks as a tag delete.
+- Fixed: the header said "live updated" with the time the page last redrew, which stood still while nothing changed. It now says "live, checked" with the time of the last completed walk of the registry, which moves with every walk, and its tooltip gives the last change seen.
+- Settings, Refresh interval: a viewer can ask for a walk every 10, 15 or 30 seconds while their tab is open and visible. The shortest interval asked for applies to every viewer, never below `UI_POLL_MIN` (10, and never less than 10) and never slower than `UI_POLL_INTERVAL`. It ends when the tab is hidden or closed. The setting formerly called Fallback poll is now Poll while disconnected, as it applies only while the live stream is down.
+- A thin line under the header runs down to the next refresh: the next walk of the registry, sent on the live stream so it follows `UI_POLL_INTERVAL`, the burst during a push and the back-off, or the fallback poll from Settings while the stream is down.
+
 ## Changes in 0.2.5
 
 - Tags, folders and PyPI packages sort by Name unless Settings says otherwise. A sort picked in Settings is kept, and Reset to defaults goes back to Name. Browsers that stored Recent without it being picked now show Name, as the UI saved every setting together.

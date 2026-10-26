@@ -11,6 +11,7 @@ import gitlab as G
 import poller as P
 
 log = logging.getLogger("pypi")
+MAX_DELETE = 100  # uploads one delete call takes, as many as tags in one delete-tags call
 
 
 class Catalog:
@@ -30,6 +31,11 @@ class Catalog:
                 self.sig = sig
                 self.seq += 1
                 self.cond.notify_all()
+
+    def drop(self, ids):
+        """Forget deleted uploads now, so the browsers hear of it before the next read of GitLab."""
+        snap = self.snapshot()
+        self.update(snap["scope"], [p for p in snap["packages"] if p["id"] not in ids], snap["truncated"])
 
     def failed(self, message):
         with self.cond:
@@ -127,6 +133,10 @@ class Source:
         token = open(token_file).read().strip() if token_file else env.get("GITLAB_TOKEN", "")  # empty: anonymous, for a public group
         base, self.kind, self.ref = G.parse_index(index_url(env))
         self.client = G.Client(base, token, env.get("GITLAB_CA_FILE") or None)
+        # Deleting uploads takes its own token, never the read token. Without one, delete is off.
+        delete_file = env.get("GITLAB_DELETE_TOKEN_FILE")
+        delete_token = open(delete_file).read().strip() if delete_file else env.get("GITLAB_DELETE_TOKEN", "")
+        self.deleter = G.Client(base, delete_token, env.get("GITLAB_CA_FILE") or None) if delete_token else None
         self.public_url = (env.get("UI_PYPI_PUBLIC_URL") or base).rstrip("/")  # the GitLab address pip users type
         if not G.URL_RE.fullmatch(self.public_url):
             raise ValueError("UI_PYPI_PUBLIC_URL must be http(s)://host[:port][/path]")
@@ -142,9 +152,34 @@ class Source:
         self.files = FileCache(self.client, self.interval)
         self.poller = Poller(self.client, self.catalog, self.kind, self.ref, self.interval, self.limit)
 
+    def delete(self, ids):
+        """Delete uploads of this index by id, one GitLab call each. Returns one result per id: deleted, skipped (not in
+        this index, or already gone) or failed with the reason."""
+        if not (isinstance(ids, list) and 0 < len(ids) <= MAX_DELETE and all(type(i) is int for i in ids)):
+            raise G.GitLabError(400, f"ids must be a list of 1 to {MAX_DELETE} upload ids")
+        out, gone = [], set()
+        for i in dict.fromkeys(ids):
+            u = self.catalog.upload(i)
+            if u is None:
+                out.append({"id": i, "status": "skipped", "error": "not in this index"})
+                continue
+            row = {"id": i, "name": u["name"], "version": u["version"], "project": u["project"]}
+            try:
+                self.deleter.delete_package(u["projectId"], i)
+                out.append({**row, "status": "deleted"})
+                gone.add(i)
+            except G.GitLabError as e:
+                out.append({**row, "status": "skipped" if e.status == 404 else "failed", "error": e.message})
+                if e.status == 404:
+                    gone.add(i)
+        if gone:
+            self.catalog.drop(gone)
+            self.poller.kick.set()
+        return out
+
     def config(self):
         anonymous = self.catalog.anonymous if self.index_auth == "auto" else self.index_auth == "none"
         scope = self.catalog.snapshot()["scope"]
         return {"gitlab": self.public_url, "scope": scope, "kind": self.kind, "ref": self.ref,
                 "index": self.public_url + "/api/v4" + G.index_path(scope) if scope else None,
-                "interval": self.interval, "indexAuth": "none" if anonymous else "token"}
+                "interval": self.interval, "indexAuth": "none" if anonymous else "token", "delete": self.deleter is not None}

@@ -53,15 +53,15 @@ class Client:
         self.ctx = ssl.create_default_context(cafile=ca_file) if ca_file else None
         self.on_page = None  # called after each page of a list, so a long read counts as progress
 
-    def open(self, path, basic=False):
-        """GET one API path. The PyPI simple index takes basic auth (__token__), the REST API the PRIVATE-TOKEN header."""
+    def open(self, path, basic=False, method="GET"):
+        """Call one API path. The PyPI simple index takes basic auth (__token__), the REST API the PRIVATE-TOKEN header."""
         if not self.token:  # a public group: GitLab answers anonymous reads
             headers = {}
         elif basic:
             headers = {"Authorization": "Basic " + base64.b64encode(f"__token__:{self.token}".encode()).decode()}
         else:
             headers = {"PRIVATE-TOKEN": self.token}
-        req = urllib.request.Request(self.api + path, headers={**headers, "Accept": "application/json, text/html"})
+        req = urllib.request.Request(self.api + path, headers={**headers, "Accept": "application/json, text/html"}, method=method)
         try:
             r = urllib.request.urlopen(req, timeout=self.timeout, context=self.ctx)
         except urllib.error.HTTPError as e:
@@ -70,6 +70,10 @@ class Client:
                          " Use a personal, group or project access token with read_api",
                     403: ": the token lacks read_api or access to this group or project",
                     404: ": not found, or the token cannot see it"}.get(e.code, "")
+            if method == "DELETE":
+                hint = {401: ": the delete token is missing, expired or revoked",
+                        403: ": the delete token needs the api scope and the Maintainer role on the project",
+                        404: ": already gone, or the delete token cannot see it"}.get(e.code, "")
             raise GitLabError(e.code, f"GitLab answered {e.code} for {path.split('?')[0]}{hint}") from None
         except (urllib.error.URLError, OSError) as e:
             raise GitLabError(502, f"GitLab unreachable: {getattr(e, 'reason', e)}") from None
@@ -132,6 +136,10 @@ class Client:
     def files(self, project, package_id):
         rows, _ = self.get_all(f"/projects/{int(project)}/packages/{int(package_id)}/package_files", 1000)
         return [f for f in (package_file(r) for r in rows) if f]
+
+    def delete_package(self, project, package_id):
+        """Delete one upload, a name and version in one project, with its files."""
+        self.open(f"/projects/{int(project)}/packages/{int(package_id)}", method="DELETE")
 
     def anonymous_index(self, scope):
         """Whether GitLab serves the PyPI index without a login, so install commands need no token."""

@@ -215,15 +215,19 @@ class Poller(threading.Thread):
     """Walks catalog and tags every `interval` seconds, at most `max_tags` tags per cycle, resuming where it stopped.
     A push uploads its layers before its manifest, and between the two the catalog lists a new repository while its tag
     list answers 404. While one waits like that, the walk runs every `burst` seconds, for at most `burst_max` seconds
-    after it was first seen, so its tags show within seconds of the manifest. burst 0 turns this off."""
-    def __init__(self, client, state, interval=30, max_tags=500, burst=5, burst_max=600):
+    after it was first seen, so its tags show within seconds of the manifest. burst 0 turns this off.
+    A viewer may ask for a shorter interval while its page is open (want), never below `minimum`. The shortest asked for wins."""
+    def __init__(self, client, state, interval=30, max_tags=500, burst=5, burst_max=600, minimum=10):
         super().__init__(daemon=True, name="poller")
         self.client, self.state, self.interval, self.max_tags = client, state, interval, max_tags
-        self.burst, self.burst_max = burst, burst_max
+        self.burst, self.burst_max, self.minimum = burst, burst_max, minimum
+        self.wants, self.wants_lock = {}, threading.Lock()  # viewer -> (seconds asked for, monotonic time it expires)
         self.cursor, self.covered, self.stop, self.kick = "", set(), threading.Event(), threading.Event()
         self.partial = ("", {})  # a repository larger than the budget, with the tags checked so far
         self.throttle, self.last_tick = Throttle(), time.monotonic()
         self.pending = {}  # repository in the catalog whose tag list is 404 (a push in progress) -> when first seen
+        self.next_poll = None  # (wall time of the next walk, seconds waited for it), for the browsers' countdown
+        self.checked = None  # wall time the last walk finished without an error
 
     def healthy(self):
         return time.monotonic() - self.last_tick < 3 * max(self.interval, 300)
@@ -235,10 +239,31 @@ class Poller(threading.Thread):
             self.pending[repo] = time.monotonic()
             self.wake()
 
+    def want(self, viewer, secs):
+        """A viewer asks for a walk every `secs` seconds, at least `minimum`. It holds until forget(), or until two of
+        those intervals pass without another want(). A shorter interval than the one in effect wakes the walk now."""
+        secs = max(self.minimum, secs)
+        before = self.period()
+        with self.wants_lock:
+            self.wants[viewer] = (secs, time.monotonic() + 2 * secs)
+        if self.period() < before:
+            self.wake()
+
+    def forget(self, viewer):
+        with self.wants_lock:
+            self.wants.pop(viewer, None)
+
+    def period(self):
+        """The interval in effect: UI_POLL_INTERVAL, or the shortest a viewer still asks for."""
+        now = time.monotonic()
+        with self.wants_lock:
+            self.wants = {k: v for k, v in self.wants.items() if v[1] > now}
+            return min([self.interval, *(s for s, _ in self.wants.values())])
+
     def wait_for(self, fails):
-        """Seconds to the next cycle: the interval, backing off on failure, shorter while a push is in progress.
+        """Seconds to the next cycle: the interval in effect, backing off on failure, shorter while a push is in progress.
         A failing registry always backs off, burst or not."""
-        wait = min(self.interval * 2 ** min(fails, 8), 300)
+        wait = min(self.period() * 2 ** min(fails, 8), 300)
         now = time.monotonic()
         if self.burst > 0 and not fails and any(now - t < self.burst_max for t in self.pending.values()):
             wait = min(wait, self.burst)
@@ -325,6 +350,7 @@ class Poller(threading.Thread):
             try:
                 self.cycle()
                 fails = 0
+                self.checked = time.time()
                 self.throttle.ok("registry")
             except Exception as e:  # the poller must never die
                 fails += 1
@@ -334,5 +360,7 @@ class Poller(threading.Thread):
             except Exception as e:
                 self.throttle.error("state", f"state save failed: {e}")
             self.last_tick = time.monotonic()
-            self.kick.wait(self.wait_for(fails))
+            wait = self.wait_for(fails)
+            self.next_poll = (time.time() + wait, wait)
+            self.kick.wait(wait)
             self.kick.clear()
