@@ -47,6 +47,7 @@ MAX_TAGNAMES = 5000  # tag names /api/tagnames returns, so the answer stays smal
 MEDIA_TYPE_RE = re.compile(r"[a-z0-9][a-z0-9!#$&^_.+-]{0,126}/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}")
 CREATED_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})")  # RFC 3339, the form image config blobs use
 MAX_BODY = 4096  # bytes of JSON accepted on a POST
+MAX_BATCH_BODY = 16384  # for /api/delete-tags: R.MAX_BATCH tag names of up to 128 characters
 HEALTHZ = "/healthz"
 HEADER_SECS, BODY_SECS = 10, 10  # whole-request limits against clients that send a byte at a time
 CSP = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
@@ -265,12 +266,18 @@ def routes(cfg):
             cfg.poller.wake()
         return out
 
+    def delete_tags(b):
+        out = {"results": R.delete_tags(c, str(b["repo"]), b["tags"], b.get("children", False) is True)}
+        if cfg.poller:
+            cfg.poller.wake()
+        return out
+
     get = {
         "/api/config": lambda q: {"csrf": cfg.csrf, "readonly": cfg.readonly, "deleteEnabled": c.delete_enabled(),
                                   "registry": cfg.registry_url,
                                   "registryHost": cfg.registry_host or urllib.parse.urlsplit(cfg.registry_url).netloc,
                                   "registryHostSet": bool(cfg.registry_host), "environments": cfg.environments, "registryStorage": cfg.registry_storage,
-                                  "version": cfg.version, "revision": cfg.revision, "login": cfg.login_url, "logout": cfg.logout_url,
+                                  "version": cfg.version, "revision": cfg.revision, "login": cfg.login_url, "logout": cfg.logout_url, "maxBatch": R.MAX_BATCH,
                                   "pypi": cfg.pypi.config() if cfg.pypi else None},
         "/api/repos": lambda q: sorted(c.catalog()),
         "/api/tags": tags,
@@ -283,6 +290,7 @@ def routes(cfg):
         "/api/copy": woken(lambda *a: {"digest": R.copy(c, *a)}),
         "/api/move": woken(lambda *a: {"deleted": R.move(c, *a)}),
         "/api/delete": delete,
+        "/api/delete-tags": delete_tags,
     }
     if cfg.pypi:
         y = cfg.pypi
@@ -384,12 +392,12 @@ class Handler(BaseHTTPRequestHandler):
             sel.register(self.connection, selectors.EVENT_READ)
             return bool(sel.select(0))
 
-    def read_json(self):
-        """The body of a POST: a plain Content-Length of at most MAX_BODY bytes, all read within BODY_SECS."""
+    def read_json(self, limit=MAX_BODY):
+        """The body of a POST: a plain Content-Length of at most `limit` bytes, all read within BODY_SECS."""
         n = self.headers.get("Content-Length", "")
         if "Transfer-Encoding" in self.headers or not (n.isascii() and n.isdigit()):
             raise R.RegistryError(411, "a plain Content-Length is required")
-        if int(n) > MAX_BODY:
+        if int(n) > limit:
             raise R.RegistryError(413, "body too large")
         self.server.deadline(self.request, BODY_SECS)
         try:
@@ -397,14 +405,14 @@ class Handler(BaseHTTPRequestHandler):
         finally:  # the operation that follows may take longer than the body deadline
             self.server.deadline(self.request)
 
-    def mutate(self, handler):
+    def mutate(self, path):
         if self.cfg.readonly:
             return self.reply(403, {"error": "UI is read-only (UI_READONLY)"})
         if self.cfg.login_url and not user_of(self.headers):
             return self.reply(401, {"error": "log in to make changes"})
         if not csrf_ok(self.cfg, self.headers):
             return self.reply(403, {"error": "CSRF check failed"})
-        self.reply(200, handler(self.read_json()))
+        self.reply(200, self.post[path](self.read_json(MAX_BATCH_BODY if path == "/api/delete-tags" else MAX_BODY)))
 
     def pypi_locked(self):
         """PyPI data needs a login: an auth proxy is in front, the packages are not public, and this request has no user."""
@@ -418,7 +426,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.cfg.hosts and url.path != HEALTHZ and host_only(self.headers.get("Host", "")) not in self.cfg.hosts:
             return self.reply(421, {"error": "host not allowed"})  # /healthz is the container's own probe
         if method == "POST" and url.path in self.post:
-            return self.mutate(self.post[url.path])
+            return self.mutate(url.path)
         if method != "GET" or url.path in self.post:
             return self.reply(404, {"error": "not found"})
         if url.path in FILES:

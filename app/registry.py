@@ -347,6 +347,45 @@ def delete(c, repo, digest, with_children=False):
     return gone
 
 
+MAX_BATCH = 100  # tags one delete-tags call takes; each runs the checks of a single delete
+
+
+def delete_tags(c, repo, tags, with_children=False):
+    """Delete the digests of several tags, one delete() each with all its checks, indexes first. Returns one result per tag:
+    deleted, skipped (the tag is already gone) or failed with the reason. Tags that share a digest are one delete: the
+    later ones get the same result, naming the tag it went with. A tagged index child is never removed with_children,
+    as another tag keeps it."""
+    check_repo(repo)
+    if not isinstance(tags, list) or not 0 < len(tags) <= MAX_BATCH or not all(isinstance(t, str) and TAG_RE.fullmatch(t) for t in tags):
+        raise RegistryError(400, f"tags must be a list of 1 to {MAX_BATCH} tag names")
+    if not c.delete_enabled():
+        raise RegistryError(405, DELETE_OFF)
+    heads = {}
+    for tag in dict.fromkeys(tags):  # all read first, since a delete removes every tag on its digest; a repeated tag is one item
+        try:
+            heads[tag] = c.manifest(repo, tag, head=True)[1:]
+        except RegistryError as e:
+            heads[tag] = e
+    done, out = {}, {}  # done: digest -> the result of its one delete
+    # Indexes go first: a selected child of a selected index is refused (409) while the index is still there.
+    for tag in sorted(heads, key=lambda t: isinstance(heads[t], RegistryError) or heads[t][0] not in INDEX_TYPES):
+        if isinstance(heads[tag], RegistryError):
+            e = heads[tag]
+            out[tag] = {"tag": tag, "status": "skipped", "error": "tag not found"} if e.status == 404 else {"tag": tag, "status": "failed", "error": e.message}
+            continue
+        digest = heads[tag][1]
+        if digest in done:
+            first = done[digest]
+            out[tag] = {"tag": tag, "digest": digest, "status": first["status"], **({"error": first["error"]} if "error" in first else {"with": first["tag"]})}
+            continue
+        try:
+            done[digest] = {"tag": tag, "digest": digest, "status": "deleted", "deleted": delete(c, repo, digest, with_children)}
+        except RegistryError as e:
+            done[digest] = {"tag": tag, "digest": digest, "status": "failed", "error": e.message}
+        out[tag] = done[digest]
+    return [out[t] for t in heads]  # in the order asked
+
+
 def move(c, src, src_ref, dst, dst_ref):
     """Copy, check the destination digest matches, then delete the source digest."""
     if src == dst:

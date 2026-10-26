@@ -235,6 +235,10 @@ th[aria-sort=ascending] .thbtn, th[aria-sort=descending] .thbtn { color:var(--fg
 .tagchip { display:inline-block; padding:0 var(--s3); border-radius:13px; border:1px solid var(--line2); background:var(--bg); font:12.5px/24px var(--mono); }
 button.dangerfill { background:var(--bad); border-color:var(--bad); color:#fff; }
 button.dangerfill:hover:not(:disabled) { background:var(--bad); filter:brightness(1.08); }
+.bulk { align-items:center; min-height:30px; } .bulk > span { font-size:13px; margin-right:var(--s2); }
+th.pick, td.pick { width:20px; padding-right:0; } .pick input { width:16px; height:16px; margin:0; vertical-align:middle; accent-color:var(--acc); cursor:pointer; }
+.sbody > .dlg-warn { margin:var(--s2) 0; }
+.results td { font-size:13px; } .results td:last-child { overflow-wrap:anywhere; }
 .transfer .srow { border-top:1px solid var(--line); margin-top:var(--s3); }
 
 /* Dialog */
