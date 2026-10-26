@@ -8,8 +8,8 @@ let checked = null; // when the server last finished a walk of the registry
 
 // Preferences only, no data or secrets. Storage may be blocked, so every access is guarded.
 // expanded and selected are the tree state (node ids and the location hash), sidebar is its width in px.
-const DEFAULTS = { theme: "system", repoSort: "name", tagSort: "recent", packageSort: "name", live: true, interval: 30, pageSize: 50, runtime: "podman", showEmpty: false, tool: "pip", os: "linux", show: "all", sidebar: 280, selected: "/recent", expanded: [] };
-const CHOICES = { theme: ["system", "light", "dark"], repoSort: ["name", "recent"], tagSort: ["recent", "version"], packageSort: ["name", "recent"], runtime: ["podman", "docker"], tool: ["pip", "uv"], os: ["linux", "windows"], show: ["all", "containers", "python"], interval: [10, 30, 60, 300], pageSize: [25, 50, 100, 200] };
+const DEFAULTS = { theme: "system", repoSort: "name", tagSort: "recent", packageSort: "name", live: true, refresh: 0, interval: 30, pageSize: 50, runtime: "podman", showEmpty: false, tool: "pip", os: "linux", show: "all", sidebar: 280, selected: "/recent", expanded: [] };
+const CHOICES = { theme: ["system", "light", "dark"], repoSort: ["name", "recent"], tagSort: ["recent", "version"], packageSort: ["name", "recent"], runtime: ["podman", "docker"], tool: ["pip", "uv"], os: ["linux", "windows"], show: ["all", "containers", "python"], interval: [10, 30, 60, 300], refresh: [0, 10, 15, 30, 60], pageSize: [25, 50, 100, 200] };
 const MAX_EXPANDED = 500;
 const SIDEBAR = [180, 640];
 let prefs = { ...DEFAULTS };
@@ -1356,7 +1356,8 @@ function startLive() {
   state = "off";
   if (prefs.live && window.EventSource) {
     state = "connecting";
-    es = new EventSource("/api/events");
+    // A refresh interval picked in Settings goes with the stream, and only while this tab is visible: the server drops it when the stream closes.
+    es = new EventSource("/api/events" + (prefs.refresh && !document.hidden ? "?interval=" + prefs.refresh : ""));
     es.onopen = () => { state = "live"; liveLabel(); };
     es.onmessage = () => {
       if (document.hidden) stale = true;
@@ -1406,6 +1407,7 @@ function startPoll() { // the fallback while the stream is down, every `interval
     if (cfg.pypi && !pypi.denied) try { const r = await api("/api/pypi/seq"); if (r.seq !== pypi.seq) void pypiSync(); } catch (e) { /* shown by the next pypiSync() */ }
   }, 1000 * pollSecs());
 }
+document.addEventListener("visibilitychange", () => { if (prefs.refresh && prefs.live) startLive(); }); // ask for the interval only while visible
 document.addEventListener("visibilitychange", () => { if (!document.hidden && stale) { stale = false; void sync(); void pypiSync(); } });
 
 // ---- Copy to / Move to: source card, destination path with a folder picker, promote chips, tag and a preview -----------------
@@ -1867,7 +1869,7 @@ function helpPanel() {
 }
 
 // ---- Settings: one panel, changes apply as you make them ----------------------------------------------------------------
-const SETTING_KEYS = ["theme", "runtime", "tool", "os", "show", "repoSort", "tagSort", "packageSort", "live", "interval", "pageSize", "showEmpty"];
+const SETTING_KEYS = ["theme", "runtime", "tool", "os", "show", "repoSort", "tagSort", "packageSort", "live", "refresh", "interval", "pageSize", "showEmpty"];
 const SORT_KEYS = ["repoSort", "tagSort", "packageSort"];
 function segmented(labelId, options, key, apply) { // options: [value, text, iconName?]. Arrow keys move and select, like radio buttons.
   const box = el("div", { className: "seg", role: "radiogroup", "aria-labelledby": labelId });
@@ -1895,8 +1897,8 @@ function switchEl(labelId, key, apply) {
 }
 // The label text of a switch row flips the switch too. The button keeps role=switch, so Space and Enter still work on it.
 const switchLabel = (sw, ...kids) => el("div", { className: "tap", onclick: () => { if (!sw.disabled) sw.click(); } }, ...kids);
-function selectEl(labelId, key, values, text, apply) {
-  const sel = el("select", { "aria-labelledby": labelId, onchange: () => apply({ [key]: +sel.value }) }, ...values.map((v) => el("option", { value: String(v), textContent: text(v) })));
+function selectEl(labelId, key, values, text, apply, unusable) { // unusable(v): an option shown but not offered
+  const sel = el("select", { "aria-labelledby": labelId, onchange: () => apply({ [key]: +sel.value }) }, ...values.map((v) => el("option", { value: String(v), textContent: text(v), disabled: !!unusable?.(v) })));
   const wrap = el("span", { className: "selwrap" }, sel, icon("chev"));
   wrap.draw = (off = false) => { sel.value = String(prefs[key]); sel.disabled = off; };
   wrap.draw(false);
@@ -1912,7 +1914,7 @@ function applyPrefs(change) { // save a change and do what it needs, at once
   Object.assign(prefs, change);
   savePrefs();
   if (prefs.theme !== before.theme) applyTheme();
-  if (prefs.live !== before.live) startLive();
+  if (prefs.live !== before.live || prefs.refresh !== before.refresh) startLive();
   if (prefs.interval !== before.interval) startPoll();
   if (prefs.showEmpty !== before.showEmpty || prefs.show !== before.show) { resetHidden(); renderTree(); drawTypes(); }
   const sorted = SORT_KEYS.some((k) => prefs[k] !== before[k]);
@@ -1927,6 +1929,8 @@ function settings() {
     controls.forEach((c) => c.draw());
     pollCtl.draw(!prefs.live); // the poll only runs while the stream is down, so it means nothing with auto-refresh off
     pollRow.dataset.off = String(!prefs.live);
+    refreshCtl.draw(!prefs.live);
+    refreshRow.dataset.off = String(!prefs.live);
   };
   const row = (id, label, desc, control) => {
     controls.push(control);
@@ -1935,7 +1939,11 @@ function settings() {
   };
   const section = (title, ...rows) => el("section", {}, el("h3", { className: "ssec", textContent: title }), ...rows);
   const pollCtl = selectEl("s-poll", "interval", CHOICES.interval, (v) => v + " s", apply);
-  const pollRow = row("s-poll", "Fallback poll", "Seconds between checks while the live stream is down.", pollCtl);
+  const pollRow = row("s-poll", "Poll while disconnected", "Only while the live stream is down: seconds between checks of this page.", pollCtl);
+  // Server default is UI_POLL_INTERVAL. A choice can only make the walk faster, and never faster than UI_POLL_MIN.
+  const refreshCtl = selectEl("s-refresh", "refresh", CHOICES.refresh, (v) => (v ? v + " s" : `Server default (${cfg.pollInterval} s)`), apply,
+    (v) => v && (v >= cfg.pollInterval || v < cfg.pollMin));
+  const refreshRow = row("s-refresh", "Refresh interval", "Applies to every viewer while this tab is open.", refreshCtl);
   const dlg = el("dialog", { className: "settings", "aria-labelledby": "s-title" },
     el("div", { className: "shead" }, el("h2", { id: "s-title", textContent: "Settings" }),
       el("button", { type: "button", className: "iconbtn", "aria-label": "Close settings", onclick: () => dlg.close() }, icon("close"))),
@@ -1951,7 +1959,7 @@ function settings() {
         row("s-rows", "Rows per page", "Rows a list shows before Show more.", selectEl("s-rows", "pageSize", CHOICES.pageSize, String, apply)),
         row("s-empty", "Show empty repositories", "Repositories with no tags. The registry cannot delete them.", switchEl("s-empty", "showEmpty", apply))),
       section("Lifecycle", lifecycleRow()),
-      section("Live updates", row("s-live", "Auto-refresh", "Update the tree and lists as the registry changes.", switchEl("s-live", "live", apply)), pollRow)),
+      section("Live updates", row("s-live", "Auto-refresh", "Update the tree and lists as the registry changes.", switchEl("s-live", "live", apply)), refreshRow, pollRow)),
     el("div", { className: "sfoot" },
       el("button", { type: "button", className: "linkbtn", textContent: "Reset to defaults", onclick: () => apply(Object.fromEntries(SETTING_KEYS.map((k) => [k, DEFAULTS[k]]))) }),
       el("button", { type: "button", className: "primary", textContent: "Done", onclick: () => dlg.close() })));

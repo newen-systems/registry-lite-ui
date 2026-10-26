@@ -32,6 +32,7 @@ Set on the `registry-lite-ui` service. The full set is `Config` in `app/server.p
 | Optional | `UI_REGISTRY_SERVICE` | compose: `registry` | Compose service name of the registry, shown in the compose form of the garbage collection commands in Help. |
 | Optional | `UI_POLL_INTERVAL`, `UI_MAX_EVENTS`, `UI_MAX_EVENT_DAYS` | `30`, `1000`, `30` | Seconds between registry walks, and the Recent history caps. |
 | Optional | `UI_POLL_BURST`, `UI_POLL_BURST_MAX` | `5`, `600` | While a push has uploaded layers but not its manifest (the repository is listed, its tags answer 404), walk every `UI_POLL_BURST` seconds instead, for at most `UI_POLL_BURST_MAX` seconds from when it was first seen. `0` turns it off. A new tag in a repository that already has tags shows at the next normal walk. |
+| Optional | `UI_POLL_MIN` | `10` | The shortest walk interval a viewer may pick in Settings, Refresh interval. The pick holds while that viewer's tab is open and visible, the shortest pick wins for every viewer, and a pick never makes the walk slower than `UI_POLL_INTERVAL`. Values under 10 count as 10. |
 | When the registry has basic auth | `REGISTRY_USER`, `REGISTRY_PASSWORD_FILE` | empty | Registry credentials. See `compose.registry-auth.yml`. |
 | When the registry is HTTPS | `REGISTRY_CA_FILE` | system store | CA bundle (or the self-signed certificate) for `REGISTRY_URL`. Verification never turns off. |
 | When the UI serves HTTPS | `UI_TLS_CERT`, `UI_TLS_KEY` | empty | Certificate and key for the UI listener, TLS 1.2+. |

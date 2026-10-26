@@ -10,6 +10,7 @@ import tempfile
 import threading
 import time
 import unittest
+import unittest.mock
 import urllib.parse
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
@@ -1450,7 +1451,7 @@ class DeleteTags(unittest.TestCase):
 class Countdown(unittest.TestCase):
     def test_stream_says_when_the_next_walk_is(self):
         cfg = S.Config({})
-        cfg.poller = type("P", (), {"next_poll": (time.time() + 5, 5), "checked": time.time() - 2, "healthy": lambda self: True})()
+        cfg.poller = type("P", (), {"next_poll": (time.time() + 5, 5), "checked": time.time() - 2, "healthy": lambda self: True, "forget": lambda self, v: None})()
         srv = S.BoundedServer(("127.0.0.1", 0), S.make_handler(cfg), 8)
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         self.addCleanup(srv.server_close)
@@ -1466,6 +1467,24 @@ class Countdown(unittest.TestCase):
         self.assertTrue(3 < poll["left"] <= 5)
         self.assertTrue(2 <= poll["checkedAgo"] < 4)  # the footer's "checked" time moves with every walk
         self.assertTrue(2 <= S.routes(cfg)[0]["/api/recent"]({})["checkedAgo"] < 4)
+
+
+class RefreshInterval(unittest.TestCase):
+    def test_viewers_shorten_the_walk_down_to_the_floor(self):
+        p = P.Poller(FakeRegistry({}), P.State(clock=Clock()), interval=30, minimum=10)
+        p.want("a", 5)  # below the floor: clamped
+        self.assertEqual(p.wait_for(0), 10)
+        self.assertTrue(p.kick.is_set())  # a shorter interval takes effect now, not after the old wait
+        p.want("b", 15)
+        self.assertEqual(p.wait_for(0), 10)  # the shortest wins
+        p.forget("a")  # its stream closed
+        self.assertEqual(p.wait_for(0), 15)
+        p.want("c", 60)
+        self.assertEqual(p.period(), 15)  # never slower than UI_POLL_INTERVAL
+        with unittest.mock.patch("poller.time.monotonic", return_value=time.monotonic() + 31):
+            self.assertEqual(p.wait_for(0), 30)  # b not renewed within two of its intervals: back to the default
+        self.assertEqual(S.Config({"UI_POLL_MIN": "3"}).poll_min, 10)
+        self.assertEqual(S.Config({"UI_POLL_MIN": "20"}).poll_min, 20)
 
 
 class Stream(unittest.TestCase):

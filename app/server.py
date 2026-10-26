@@ -49,6 +49,7 @@ CREATED_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|
 MAX_BODY = 4096  # bytes of JSON accepted on a POST
 MAX_BATCH_BODY = 16384  # for /api/delete-tags: R.MAX_BATCH tag names of up to 128 characters
 HEALTHZ = "/healthz"
+MIN_POLL = 10  # seconds: the floor of UI_POLL_MIN, so viewers can never drive the registry walk faster
 HEADER_SECS, BODY_SECS = 10, 10  # whole-request limits against clients that send a byte at a time
 CSP = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 SECURITY_HEADERS = (("Content-Security-Policy", CSP), ("X-Content-Type-Options", "nosniff"), ("Referrer-Policy", "no-referrer"),
@@ -85,6 +86,7 @@ class Config:
         n = lambda key, default: int(env.get(key, default))  # noqa: E731
         self.max_conn, self.interval, self.max_tags = n("UI_MAX_CONN", 64), n("UI_POLL_INTERVAL", 30), n("UI_POLL_MAX_TAGS", 500)
         self.burst, self.burst_max = n("UI_POLL_BURST", 5), n("UI_POLL_BURST_MAX", 600)  # see poller.Poller
+        self.poll_min = max(MIN_POLL, n("UI_POLL_MIN", MIN_POLL))  # the shortest interval a viewer may ask for
         if self.burst < 0 or self.burst_max < 0:
             raise ValueError("UI_POLL_BURST and UI_POLL_BURST_MAX must be 0 or more seconds")
         self.sse_slots = threading.BoundedSemaphore(n("UI_MAX_SSE", 20))
@@ -280,7 +282,7 @@ def routes(cfg):
                                   "registry": cfg.registry_url,
                                   "registryHost": cfg.registry_host or urllib.parse.urlsplit(cfg.registry_url).netloc,
                                   "registryHostSet": bool(cfg.registry_host), "environments": cfg.environments, "registryStorage": cfg.registry_storage, "registryService": cfg.registry_service,
-                                  "version": cfg.version, "revision": cfg.revision, "login": cfg.login_url, "logout": cfg.logout_url, "maxBatch": R.MAX_BATCH,
+                                  "version": cfg.version, "revision": cfg.revision, "login": cfg.login_url, "logout": cfg.logout_url, "maxBatch": R.MAX_BATCH, "pollInterval": cfg.interval, "pollMin": cfg.poll_min,
                                   "pypi": cfg.pypi.config() if cfg.pypi else None},
         "/api/repos": lambda q: sorted(c.catalog()),
         "/api/tags": tags,
@@ -371,8 +373,10 @@ class Handler(BaseHTTPRequestHandler):
     def reply(self, status, obj):
         self.send(status, json.dumps(obj).encode())
 
-    def events(self):
-        """Server-Sent Events: a message with the new sequence number on each change, a comment every 15 s as heartbeat."""
+    def events(self, q=None):
+        """Server-Sent Events: a message with the new sequence number on each change, a comment every 15 s as heartbeat.
+        ?interval=N asks the poller for a walk every N seconds (at least UI_POLL_MIN) while this stream is open."""
+        asked = int((q or {}).get("interval", ["0"])[0] or 0)
         if not self.cfg.sse_slots.acquire(blocking=False):
             self.cfg.errors.error("sse", "live client limit reached, further clients get 503")
             return self.reply(503, {"error": "too many live clients"})
@@ -388,6 +392,8 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.flush()
             idle, sent = 0, None
             while not self.hung_up():
+                if asked > 0 and self.cfg.poller:
+                    self.cfg.poller.want(self, asked)  # renewed every second; forgotten when the stream closes
                 now = self.cfg.state.wait(seq, 1)
                 poll = self.cfg.poller.next_poll if self.cfg.poller else None
                 if poll and poll != sent:  # when the registry is walked next, for the countdown line
@@ -407,6 +413,8 @@ class Handler(BaseHTTPRequestHandler):
         except OSError:
             pass  # client went away
         finally:
+            if self.cfg.poller:
+                self.cfg.poller.forget(self)
             self.cfg.sse_slots.release()
 
     def hung_up(self):
@@ -458,7 +466,7 @@ class Handler(BaseHTTPRequestHandler):
         if url.path == HEALTHZ:
             return self.health()
         if url.path == "/api/events":
-            return self.events()
+            return self.events(urllib.parse.parse_qs(url.query))
         if url.path == "/api/config":  # who is logged in comes from this request's headers
             out = {**self.get[url.path]({}), "user": user_of(self.headers)}
             if self.pypi_locked():
@@ -536,7 +544,7 @@ def main(env):
     if cert:
         # handshake in the worker thread, so a stalled client cannot block accept()
         httpd.socket = server_context(cert, key).wrap_socket(httpd.socket, server_side=True, do_handshake_on_connect=False)
-    cfg.poller = P.Poller(cfg.client, cfg.state, cfg.interval, cfg.max_tags, cfg.burst, cfg.burst_max)
+    cfg.poller = P.Poller(cfg.client, cfg.state, cfg.interval, cfg.max_tags, cfg.burst, cfg.burst_max, cfg.poll_min)
     cfg.poller.start()
     if cfg.pypi:
         cfg.pypi.poller.start()
