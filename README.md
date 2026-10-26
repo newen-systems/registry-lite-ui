@@ -29,6 +29,7 @@ Set on the `registry-lite-ui` service. The full set is `Config` in `app/server.p
 | Optional | `UI_READONLY` | `false` | Hides and refuses copy, move and delete. |
 | Optional | `UI_ENVIRONMENTS` | `dev,test,uat,staging,prod` | Stage prefixes, in order, offered as promote shortcuts in Copy to and Move to. |
 | Optional | `UI_REGISTRY_STORAGE` | empty | Host path or volume of the registry data, shown in the garbage collection commands in Help. |
+| Optional | `UI_REGISTRY_SERVICE` | compose: `registry` | Compose service name of the registry, shown in the compose form of the garbage collection commands in Help. |
 | Optional | `UI_POLL_INTERVAL`, `UI_MAX_EVENTS`, `UI_MAX_EVENT_DAYS` | `30`, `1000`, `30` | Seconds between registry walks, and the Recent history caps. |
 | Optional | `UI_POLL_BURST`, `UI_POLL_BURST_MAX` | `5`, `600` | While a push has uploaded layers but not its manifest (the repository is listed, its tags answer 404), walk every `UI_POLL_BURST` seconds instead, for at most `UI_POLL_BURST_MAX` seconds from when it was first seen. `0` turns it off. A new tag in a repository that already has tags shows at the next normal walk. |
 | When the registry has basic auth | `REGISTRY_USER`, `REGISTRY_PASSWORD_FILE` | empty | Registry credentials. See `compose.registry-auth.yml`. |
@@ -36,6 +37,7 @@ Set on the `registry-lite-ui` service. The full set is `Config` in `app/server.p
 | When the UI serves HTTPS | `UI_TLS_CERT`, `UI_TLS_KEY` | empty | Certificate and key for the UI listener, TLS 1.2+. |
 | When PyPI is on | `PYPI_INDEX_URL` | none | The index pip is given: `https://<gitlab>/api/v4/groups/<id or path>/-/packages/pypi/simple` or `.../projects/<id or path>/packages/pypi/simple`. |
 | When PyPI is on | `secrets/gitlab_token` | none | A personal, group or project access token with `read_api`, never sent to the browser. A deploy token does not work: GitLab answers it 401 on the packages API. Leave the file empty for a public index. |
+| To delete Python packages | `secrets/gitlab_delete_token` | none | A second token, with the `api` scope and the Maintainer role on the index's projects. Never the read token. Without it, delete is hidden and refused. See `compose.pypi-delete.yml`. |
 | Optional | `UI_PYPI_PUBLIC_URL` | base of `PYPI_INDEX_URL` | The GitLab address pip users type, when it differs. |
 | Optional | `UI_PYPI_PUBLIC` | `false` | Behind `compose.oidc.yml`, PyPI needs a login unless this is `true`. |
 
@@ -81,6 +83,7 @@ Add each with `-f`, after `compose.yml` (or after `compose.ui.yml` for a registr
 |---|---|---|
 | `compose.ui.yml` | The UI alone, used in place of `compose.yml`. | `REGISTRY_URL`, and `CERTS_DIR`, `KEYS_DIR` for HTTPS. |
 | `compose.pypi.yml` | The PyPI source: a second tree root and a type filter. | `PYPI_INDEX_URL`, `secrets/gitlab_token`. |
+| `compose.pypi-delete.yml` | Deleting Python package versions, after `compose.pypi.yml`. | `secrets/gitlab_delete_token`. |
 | `compose.oidc.yml` | oauth2-proxy in front. Reads stay anonymous, a login gates changes and PyPI. | `OIDC_ISSUER_URL`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `OIDC_COOKIE_SECRET`, `OIDC_REDIRECT_URL`, `OIDC_EMAIL_DOMAINS`, `UI_ALLOWED_HOSTS`, optional `OIDC_ALLOWED_GROUPS`. |
 | `compose.ldap.yml` | dex with LDAP as the issuer, after `compose.oidc.yml`. | `LDAP_BIND_PW`, `DEX_HOST`, `TLS_CERT`, `DEX_TLS_KEY`; edit `auth/dex-ldap.yaml`. |
 | `compose.basic.yml` | nginx basic auth in front of everything. | `auth/htpasswd` (`htpasswd -B -c auth/htpasswd admin`), `UI_ALLOWED_HOSTS`. |
@@ -100,8 +103,11 @@ Add each with `-f`, after `compose.yml` (or after `compose.ui.yml` for a registr
 - **Recent** is when the UI saw a change: the registry API has no push times, and pushes before the UI started are not in it. PyPI upload times come from GitLab.
 - **Copy** mounts blobs and writes the original manifest bytes, so the digest does not change. **Move** is copy, check, then delete.
 - **Delete** is by digest, so every tag on that digest goes, and the dialog lists them. A digest that a tagged index uses as a platform is refused (409).
-- **Delete selected** deletes up to 100 tags of one repository at once: tick them in the tag list (the header box ticks every row shown), then confirm. Each digest goes through the single delete with its checks, an index before its own children. The dialog names the tags that go only because they share a digest with a ticked one, and the result lists each tag as deleted, skipped (already gone) or failed with the reason. Read-only mode and a missing login hide the checkboxes, and the API refuses the call as it does a single delete.
-- **Garbage collection** is not run by the UI: it needs the registry stopped. Help shows the commands. Never add `--delete-untagged`: it breaks multi-arch images in registry 2.8.
+- **Delete selected** deletes up to 100 tags of one repository at once: tick them in the tag list (the header box ticks every row shown), then confirm. Each digest goes through the single delete with its checks, an index before its own children. The dialog names the tags that go only because they share a digest with a ticked one, and the result lists each tag as deleted, skipped (already gone) or failed with the reason. Shift-click selects every row shown between the last one clicked and this one, and a click on a row outside its links ticks it too. Read-only mode and a missing login hide the checkboxes, and the API refuses the call as it does a single delete.
+- **Sort.** Settings has one order for repositories and folders (Name by default), one for tags (Recent push by default, or Version) and one for Python packages (Name by default). A push is when the poller saw the tag take its digest, so it is accurate to one walk of the registry, and tags that were there before the UI first walked share its start time.
+- **Delete Python packages** with `compose.pypi-delete.yml`: tick versions in a package's list, then confirm. Each version goes from every project that holds it, up to 100 uploads at once, through the GitLab packages API with the delete token. The result lists each upload as deleted, skipped (already gone) or failed with the reason.
+- **Refresh line.** The line under the header runs down to the next walk of the registry: `UI_POLL_INTERVAL`, the burst during a push, or the back-off while the registry fails. While the live stream is down it runs down to the next fallback poll set in Settings. With reduced motion it moves in one-second steps.
+- **Garbage collection** is not run by the UI. Help shows the commands, for a registry container of its own (stopped) or a compose service (running, with no pushes). Never add `--delete-untagged`: it breaks multi-arch images in registry 2.8.
 - **Empty repositories** stay in the catalog, because the registry API cannot delete them. The UI hides them unless Settings shows them.
 - **PyPI** versions sort by PEP 440. A version held by several projects lists each copy with its files, SHA-256, Requires-Python and wheel platforms. Commands come for pip or uv on Linux/macOS or Windows, and leave out the token while GitLab serves the index anonymously.
 - **Auth.** CSRF token, JSON-only POST and an `Origin` check on every change. Behind `compose.oidc.yml`, the UI answers `/api/pypi/*` with 401 without a user, and the proxy strips a forged `X-Forwarded-Email`.
@@ -109,7 +115,7 @@ Add each with `-f`, after `compose.yml` (or after `compose.ui.yml` for a registr
 
 ## Out of scope
 
-- Uploading Python packages, and changing anything in GitLab.
+- Uploading Python packages, and changing anything in GitLab other than deleting package versions.
 - Running garbage collection, and token-auth registries.
 - Per-user permissions and an audit log beyond the access log.
 

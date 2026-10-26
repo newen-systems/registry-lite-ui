@@ -224,6 +224,7 @@ class Poller(threading.Thread):
         self.partial = ("", {})  # a repository larger than the budget, with the tags checked so far
         self.throttle, self.last_tick = Throttle(), time.monotonic()
         self.pending = {}  # repository in the catalog whose tag list is 404 (a push in progress) -> when first seen
+        self.next_poll = None  # (wall time of the next walk, seconds waited for it), for the browsers' countdown
 
     def healthy(self):
         return time.monotonic() - self.last_tick < 3 * max(self.interval, 300)
@@ -334,5 +335,7 @@ class Poller(threading.Thread):
             except Exception as e:
                 self.throttle.error("state", f"state save failed: {e}")
             self.last_tick = time.monotonic()
-            self.kick.wait(self.wait_for(fails))
+            wait = self.wait_for(fails)
+            self.next_poll = (time.time() + wait, wait)
+            self.kick.wait(wait)
             self.kick.clear()

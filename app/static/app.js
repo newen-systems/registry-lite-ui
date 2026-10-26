@@ -8,8 +8,8 @@ let updated = null;
 
 // Preferences only, no data or secrets. Storage may be blocked, so every access is guarded.
 // expanded and selected are the tree state (node ids and the location hash), sidebar is its width in px.
-const DEFAULTS = { theme: "system", sort: "name", sortSet: false, live: true, interval: 30, pageSize: 50, runtime: "podman", showEmpty: false, tool: "pip", os: "linux", show: "all", sidebar: 280, selected: "/recent", expanded: [] };
-const CHOICES = { theme: ["system", "light", "dark"], sort: ["recent", "name"], runtime: ["podman", "docker"], tool: ["pip", "uv"], os: ["linux", "windows"], show: ["all", "containers", "python"], interval: [10, 30, 60, 300], pageSize: [25, 50, 100, 200] };
+const DEFAULTS = { theme: "system", repoSort: "name", tagSort: "recent", packageSort: "name", live: true, interval: 30, pageSize: 50, runtime: "podman", showEmpty: false, tool: "pip", os: "linux", show: "all", sidebar: 280, selected: "/recent", expanded: [] };
+const CHOICES = { theme: ["system", "light", "dark"], repoSort: ["name", "recent"], tagSort: ["recent", "version"], packageSort: ["name", "recent"], runtime: ["podman", "docker"], tool: ["pip", "uv"], os: ["linux", "windows"], show: ["all", "containers", "python"], interval: [10, 30, 60, 300], pageSize: [25, 50, 100, 200] };
 const MAX_EXPANDED = 500;
 const SIDEBAR = [180, 640];
 let prefs = { ...DEFAULTS };
@@ -29,7 +29,8 @@ function loadPrefs() {
     for (const k of Object.keys(DEFAULTS)) {
       if (prefValid(k, p[k])) prefs[k] = p[k];
     }
-    if (!prefs.sortSet) prefs.sort = DEFAULTS.sort; // savePrefs writes every key, so a stored sort is a choice only once the user has picked one
+    // A browser that stored one sort, picked in Settings (sortSet), keeps it for repositories and packages. Tags take their default.
+    if (!("repoSort" in p) && p.sortSet && CHOICES.repoSort.includes(p.sort)) prefs.repoSort = prefs.packageSort = p.sort;
   } catch (e) { /* blocked or corrupt: use defaults */ }
 }
 function savePrefs() { try { localStorage.setItem("registry-lite-ui", JSON.stringify(prefs)); } catch (e) { /* blocked */ } }
@@ -226,8 +227,13 @@ function kidsOf(n) {
   const k = visibleKids(n);
   return n.kind === "node" && n.repo ? [...k, ...n.tagList] : k;
 }
-function folderKids(n) { // the child folders and repositories, by name, kept until they change
-  if (!n.sortedKids) n.sortedKids = [...n.kids.values()].sort(byName);
+function folderKids(n) { // the child folders and repositories, by name or last change, kept until they or the order change
+  const key = prefs.repoSort === "recent" ? "r" + recent.seq : "n";
+  if (!n.sortedKids || n.sortKey !== key) {
+    const kids = [...n.kids.values()], changed = new Map(prefs.repoSort === "recent" ? kids.map((k) => [k, lastChange(k)]) : []);
+    n.sortedKids = kids.sort(prefs.repoSort === "recent" ? (a, b) => changed.get(b) - changed.get(a) || byName(a, b) : byName);
+    n.sortKey = key;
+  }
   return n.sortedKids;
 }
 // Repositories with no tags are left out unless Settings says to show them. Whether one is empty comes from what is already known: its tags
@@ -336,8 +342,9 @@ function reconcileTags(n, rows, flashChanges) {
   for (const [k, t] of n.tagMap) {
     if (!seen.has(k)) { n.tagMap.delete(k); dropTag(t); }
   }
-  n.tagList = [...n.tagMap.values()].sort((x, y) => tagCompare(y.tag, x.tag)); // newest version first, as in the PyPI tree
+  sortTags(n);
 }
+const sortTags = (n) => { n.tagList = [...n.tagMap.values()].sort(tagDefault); };
 function getManifest(path, ref, digest, fresh) {
   const key = `${path}@${digest}`;
   if (!fresh && manifests.has(key)) return Promise.resolve(manifests.get(key));
@@ -827,9 +834,11 @@ const TAG_COLUMNS = [
   { key: "size", label: "Size", tip: "Sorts loaded rows. A multi-arch index has no size of its own.", val: sizeOf, cmp: numCmp },
   { key: "platforms", label: "Platforms", tip: "Sorts loaded rows", val: platformsOf, cmp: collator.compare },
   { key: "created", label: "Created", tip: "Sorts loaded rows. When the image was built, from its config. A multi-arch index has none.", val: createdOf, cmp: numCmp },
-  { key: "changed", label: "Changed", tip: "When this UI saw the tag change", val: (t) => t.changed || null, cmp: numCmp },
+  { key: "changed", label: "Pushed", tip: "When this UI saw the tag take its digest: the push, to within one walk of the registry", val: (t) => t.changed || null, cmp: numCmp },
 ];
-const tagDefault = (a, b) => (prefs.sort === "recent" ? (b.changed || 0) - (a.changed || 0) : 0) || tagCompare(b.tag, a.tag); // newest version first, as in the tree
+// Recent push: when the poller saw the tag take its digest. A tag it has not seen yet came after its last walk, so it goes first.
+const pushedAt = (t) => t.changed ?? Infinity;
+const tagDefault = (a, b) => (prefs.tagSort === "recent" ? pushedAt(b) - pushedAt(a) : 0) || tagCompare(b.tag, a.tag); // then newest version first
 function sortItems(items, col, dir, tie) {
   const keyed = items.filter((i) => col.val(i) != null);
   const blank = items.filter((i) => col.val(i) == null);
@@ -942,12 +951,13 @@ function tagRow(t) { // a table row for a tag, whose kind, size, platforms and b
 }
 function tagsList(n) {
   lazyReset();
-  const pick = canWrite() ? pickBar(n) : null; // no checkboxes for a user who cannot delete
+  const pick = canWrite() ? pickBar({ id: "tags:" + n.path, key: (t) => t.tag, keep: (k) => n.tagMap.has(k), noun: "tag", // no checkboxes for a user who cannot delete
+    onDelete: (keys) => deleteTags(n, n.tagList.filter((t) => keys.has(t.tag))) }) : null;
   const rowsOf = new Map();
   const entry = (t) => {
     if (!rowsOf.has(t)) {
       const r = tagRow(t);
-      if (pick) r.tr.prepend(el("td", { className: "pick" }, pick.box(t)));
+      pick?.row(r.tr, t);
       rowsOf.set(t, r);
     }
     return rowsOf.get(t);
@@ -961,37 +971,56 @@ function tagsList(n) {
   return pick ? [pick.bar, ...list] : list;
 }
 
-// Bulk delete: a checkbox per tag row, one for every row shown, and a bar with the count and Delete selected.
-// The picked tags are kept per repository while the page is open, and a tag that is gone drops out.
-function pickBar(n) {
-  const st = stateOf("tags:" + n.path);
+// Bulk delete: a checkbox per row, one for every row shown, and a bar with the count and Delete selected. A shift-click selects
+// or clears every row shown from the last row clicked to this one. The picks are kept per list while the page is open, and one that is gone drops out.
+// o: {id (the list's view state), key(item), keep(key) (whether it still exists), noun, cost(keys) (what the batch cap counts, else the picks),
+// costNoun, onDelete(keys)}
+function pickBar(o) {
+  const st = stateOf(o.id);
   st.picked ??= new Set();
-  for (const tag of st.picked) if (!n.tagMap.has(tag)) st.picked.delete(tag);
+  for (const k of st.picked) if (!o.keep(k)) st.picked.delete(k);
   const max = cfg.maxBatch || 100;
   const boxes = new Map();
   let vis = [];
-  const all = el("input", { type: "checkbox", "aria-label": "Select every tag shown" });
+  const all = el("input", { type: "checkbox", "aria-label": `Select every ${o.noun} shown` });
   const count = el("span", { className: "mut", role: "status" });
-  const go = el("button", { type: "button", className: "danger", textContent: "Delete selected", onclick: () => void deleteTags(n, n.tagList.filter((t) => st.picked.has(t.tag))) });
+  const go = el("button", { type: "button", className: "danger", textContent: "Delete selected", onclick: () => void o.onDelete(new Set(st.picked)) });
   const clear = el("button", { type: "button", className: "linkbtn", textContent: "Clear selection", onclick: () => { st.picked.clear(); update(); all.focus(); } });
   function update() {
-    const on = vis.filter((t) => st.picked.has(t.tag)).length;
+    const on = vis.filter((i) => st.picked.has(o.key(i))).length;
     all.checked = vis.length > 0 && on === vis.length;
     all.indeterminate = on > 0 && on < vis.length;
-    for (const [tag, b] of boxes) b.checked = st.picked.has(tag);
-    const k = st.picked.size;
-    count.textContent = k ? `${plural(k, "tag")} selected` + (k > max ? `, at most ${max} at once` : "") : "Select tags to delete several at once";
-    go.disabled = !k || k > max;
+    for (const [k, b] of boxes) { b.checked = st.picked.has(k); b.closest("tr")?.classList.toggle("on", b.checked); }
+    const k = st.picked.size, cost = o.cost ? o.cost(st.picked) : k;
+    count.textContent = k ? `${plural(k, o.noun)} selected` + (cost !== k ? `, ${plural(cost, o.costNoun)}` : "") + (cost > max ? `, at most ${max} at once` : "")
+      : `Select ${o.noun}s to delete several at once. Shift-click selects a range.`;
+    go.disabled = !k || cost > max;
     clear.hidden = !k;
   }
-  all.onchange = () => { for (const t of vis) { if (all.checked) st.picked.add(t.tag); else st.picked.delete(t.tag); } update(); };
-  const box = (t) => {
-    const b = el("input", { type: "checkbox", "aria-label": `Select ${t.tag}`, checked: st.picked.has(t.tag) });
-    b.onchange = () => { if (b.checked) st.picked.add(t.tag); else st.picked.delete(t.tag); update(); };
-    boxes.set(t.tag, b);
-    return b;
+  const set = (k, on) => { if (on) st.picked.add(k); else st.picked.delete(k); };
+  const pick = (item, on, range) => {
+    const keys = vis.map(o.key), from = keys.indexOf(st.anchor), to = keys.indexOf(o.key(item));
+    if (range && from >= 0 && to >= 0) keys.slice(Math.min(from, to), Math.max(from, to) + 1).forEach((k) => set(k, on));
+    else set(o.key(item), on);
+    st.anchor = o.key(item);
+    update();
   };
-  return { bar: el("div", { className: "bar bulk" }, count, go, clear), head: el("th", { className: "pick" }, all), box, shown: (v) => { vis = v; update(); } };
+  all.onchange = () => { for (const i of vis) set(o.key(i), all.checked); update(); };
+  // A checkbox cell first in the row. A click elsewhere on the row, away from its links, buttons and selected text, ticks it too.
+  const row = (tr, item) => {
+    const k = o.key(item);
+    const b = el("input", { type: "checkbox", "aria-label": `Select ${k}`, checked: st.picked.has(k) });
+    b.onclick = (e) => pick(item, b.checked, e.shiftKey);
+    boxes.set(k, b);
+    tr.prepend(el("td", { className: "pick" }, b));
+    tr.classList.add("pickable");
+    tr.addEventListener("mousedown", (e) => { if (e.shiftKey && !e.target.closest("a, button, input")) e.preventDefault(); }); // no text selection on shift-click
+    tr.addEventListener("click", (e) => {
+      if (e.target.closest("a, button, input") || String(getSelection())) return;
+      pick(item, !st.picked.has(k), e.shiftKey);
+    });
+  };
+  return { bar: el("div", { className: "bar bulk" }, count, go, clear), head: el("th", { className: "pick" }, all), row, shown: (v) => { vis = v; update(); } };
 }
 
 function childrenList(n) {
@@ -1000,7 +1029,7 @@ function childrenList(n) {
   const kindOf = (k) => (k.repo ? "repository" : "folder");
   const byRecent = (a, b) => changed.get(b) - changed.get(a) || byName(a, b);
   return listView({
-    id: "kids:" + n.id, items, tie: byName, defaultCmp: prefs.sort === "recent" ? byRecent : byName,
+    id: "kids:" + n.id, items, tie: byName, defaultCmp: prefs.repoSort === "recent" ? byRecent : byName,
     columns: [
       { key: "name", label: "Name", val: (k) => k.name, cmp: collator.compare },
       { key: "type", label: "Type", val: kindOf, cmp: collator.compare },
@@ -1327,20 +1356,49 @@ function startLive() {
       if (document.hidden) stale = true;
       else syncSoon();
     };
-    es.onerror = () => { state = "connecting"; liveLabel(); }; // the browser reconnects by itself
+    es.onerror = () => { state = "connecting"; liveLabel(); pollCountdown(); }; // the browser reconnects by itself
     es.addEventListener("pypi", () => { if (document.hidden) stale = true; else void pypiSync(); });
+    es.addEventListener("poll", (e) => { try { const p = JSON.parse(e.data); countdown(p.left, p.wait); } catch (err) { /* a bad event: keep the line */ } });
   }
+  if (!prefs.live) countdown(0, 0);
   liveLabel();
 }
-let pollTimer = 0;
+// The countdown line under the header: the time to the next walk of the registry (sent on the stream as it is scheduled, so it
+// follows UI_POLL_INTERVAL, the burst during a push and the back-off), or to the next fallback poll while the stream is down.
+// The filled part shrinks right to left and the refresh comes when it is empty. With reduced motion it moves in one-second steps.
+const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
+let tickTimer = 0;
+function countdown(left, wait) { // seconds
+  const bar = $("tick"), fill = bar.firstElementChild;
+  clearInterval(tickTimer);
+  bar.hidden = !prefs.live || !(wait > 0);
+  if (bar.hidden) return;
+  const end = Date.now() + left * 1000, part = () => Math.min(1, Math.max(0, end - Date.now()) / 1000 / wait);
+  fill.style.transition = "none";
+  fill.style.transform = `scaleX(${part()})`;
+  if (reducedMotion.matches) {
+    tickTimer = setInterval(() => { fill.style.transform = `scaleX(${part()})`; if (!part()) clearInterval(tickTimer); }, 1000);
+    return;
+  }
+  void fill.offsetWidth; // start from the full part, then run it down
+  fill.style.transition = `transform ${left}s linear`;
+  fill.style.transform = "scaleX(0)";
+}
+let pollTimer = 0, pollNext = 0;
+const pollSecs = () => Math.max(5, prefs.interval);
+const pollCountdown = () => { if (state !== "live") countdown(Math.max(0, pollNext - Date.now()) / 1000, pollSecs()); };
 function startPoll() { // the fallback while the stream is down, every `interval` seconds. Restarted when the interval changes.
   clearInterval(pollTimer);
+  pollNext = Date.now() + 1000 * pollSecs();
+  pollCountdown();
   pollTimer = setInterval(async () => {
+    pollNext = Date.now() + 1000 * pollSecs();
+    pollCountdown();
     if (!prefs.live || document.hidden || modalOpen()) return;
     if (state === "live") return;
     try { const r = await api("/api/recent?limit=1"); if (r.seq !== lastSeq) void sync(); } catch (e) { /* shown by the next sync() */ }
     if (cfg.pypi && !pypi.denied) try { const r = await api("/api/pypi/seq"); if (r.seq !== pypi.seq) void pypiSync(); } catch (e) { /* shown by the next pypiSync() */ }
-  }, 1000 * Math.max(5, prefs.interval));
+  }, 1000 * pollSecs());
 }
 document.addEventListener("visibilitychange", () => { if (!document.hidden && stale) { stale = false; void sync(); void pypiSync(); } });
 
@@ -1400,7 +1458,7 @@ async function deleteTags(n, picked) {
   const st = stateOf("tags:" + n.path);
   for (const r of results) if (r.status !== "failed") st.picked.delete(r.tag); // a failed tag stays picked, to retry or look at
   await touch(n.path).catch(() => { /* the next sync shows it */ });
-  await deleteResults(n.path, results);
+  await deleteResults(n.path, results, "tag");
   await renderPane();
   $("main").querySelector(".bulk button:not(:disabled), .pick input")?.focus();
 }
@@ -1458,20 +1516,22 @@ const RESULT_TEXT = { deleted: "Deleted", failed: "Failed", skipped: "Skipped" }
 const RESULT_CLASS = { deleted: "new", failed: "deleted", skipped: "mut" };
 function resultDetail(r) {
   if (r.error) return r.error;
+  if (r.detail) return r.detail;
   if (r.with) return `Same digest as ${r.with}`;
   return r.deleted?.length > 1 ? `${short(r.digest)}, and ${plural(r.deleted.length - 1, "platform image")}` : short(r.digest);
 }
-function deleteResults(repo, results) {
+function deleteResults(repo, results, noun) {
+  const Noun = noun[0].toUpperCase() + noun.slice(1);
   return new Promise((resolve) => {
     const n = (s) => results.filter((r) => r.status === s).length;
     const close = el("button", { type: "button", className: "primary", textContent: "Close", onclick: () => dlg.close() });
     const rows = results.map((r) => el("tr", {}, el("td", {}, code(r.tag)), el("td", {}, el("span", { className: "badge " + RESULT_CLASS[r.status], textContent: RESULT_TEXT[r.status] })), el("td", { className: "mut", textContent: resultDetail(r) })));
     const dlg = el("dialog", { className: "settings transfer", "aria-labelledby": "r-title", "aria-describedby": "r-sum" },
-      el("div", { className: "shead" }, el("h2", { id: "r-title", textContent: n("failed") ? "Some tags were not deleted" : "Tags deleted" }),
+      el("div", { className: "shead" }, el("h2", { id: "r-title", textContent: n("failed") ? `Some ${noun}s were not deleted` : `${Noun}s deleted` }),
         el("button", { type: "button", className: "iconbtn", "aria-label": "Close", onclick: () => dlg.close() }, icon("close"))),
       el("div", { className: "sbody" },
         el("p", { className: "scope", id: "r-sum", textContent: `${repo}: ${n("deleted")} deleted, ${n("failed")} failed, ${n("skipped")} skipped.` }),
-        el("table", { className: "results" }, el("thead", {}, el("tr", {}, el("th", { textContent: "Tag" }), el("th", { textContent: "Result" }), el("th", { textContent: "Detail" }))), el("tbody", {}, ...rows))),
+        el("table", { className: "results" }, el("thead", {}, el("tr", {}, el("th", { textContent: Noun }), el("th", { textContent: "Result" }), el("th", { textContent: "Detail" }))), el("tbody", {}, ...rows))),
       el("div", { className: "sfoot" }, el("span"), close));
     dlg.addEventListener("close", () => { dlg.remove(); resolve(); });
     document.body.append(dlg);
@@ -1734,27 +1794,48 @@ const REGISTRY_IMAGE = "registry:2@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895
 function gcCommand(tool, storage, dry) {
   return `${tool} run --rm -v ${storage}:/var/lib/registry:Z ${REGISTRY_IMAGE} registry garbage-collect${dry ? " --dry-run" : ""} /etc/docker/registry/config.yml`;
 }
+// The same in a running compose service, by its name (UI_REGISTRY_SERVICE).
+function composeGcCommand(compose, service, dry) {
+  return `${compose} exec ${service} registry garbage-collect${dry ? " --dry-run" : ""} /etc/docker/registry/config.yml`;
+}
+let gcForm = null; // run (a container of its own) or compose, for this page's life
+function gcSteps(tool, storage) {
+  if (gcForm === "run") {
+    return [el("li", { textContent: "Stop the registry the way you normally do (systemd, compose or Quadlet)." }),
+      el("li", {}, "Dry run, which lists what would be deleted.", codeBlock("Dry run", [gcCommand(tool, storage, true)])),
+      el("li", {}, "Collect.", codeBlock("Collect", [gcCommand(tool, storage, false)])),
+      el("li", { textContent: "Start the registry again." })];
+  }
+  const compose = tool === "docker" ? "docker compose" : "podman-compose", service = cfg.registryService || "<registry-service>";
+  return [el("li", { textContent: "Make sure nothing pushes while it runs: this collects inside the running registry, and a push in progress can lose layers." }),
+    el("li", {}, "Dry run, which lists what would be deleted.", codeBlock("Dry run", [composeGcCommand(compose, service, true)])),
+    el("li", {}, "Collect.", codeBlock("Collect", [composeGcCommand(compose, service, false)])),
+    el("li", {}, "Restart the registry, so it forgets the deleted blobs it has cached.", codeBlock("Restart", [`${compose} restart ${service}`]))];
+}
 function gcSection() {
   const box = el("div", { className: "gcsteps" });
   const draw = () => {
     const storage = cfg.registryStorage || "<registry-storage>";
     const tool = prefs.runtime;
+    gcForm ??= cfg.registryService ? "compose" : "run";
     const seg = el("div", { className: "seg", role: "group", "aria-label": "Command line tool" }, ...CHOICES.runtime.map((rt) => el("button", {
       type: "button", textContent: rt, "aria-pressed": String(rt === tool), onclick: () => { applyPrefs({ runtime: rt }); draw(); },
     })));
+    const form = el("div", { className: "seg", role: "group", "aria-label": "How the registry runs" }, ...[["run", "Container"], ["compose", "Compose"]].map(([k, text]) => el("button", {
+      type: "button", textContent: text, "aria-pressed": String(k === gcForm), onclick: () => { gcForm = k; draw(); },
+    })));
+    const hints = [];
+    if (gcForm === "compose" && !cfg.registryService) hints.push("UI_REGISTRY_SERVICE is not set, so the commands have the placeholder <registry-service>. Replace it with the compose service name of the registry, or set UI_REGISTRY_SERVICE.");
+    if (!cfg.registryStorage) hints.push("UI_REGISTRY_STORAGE is not set, so the command has the placeholder <registry-storage>. Replace it with the host path or volume name of the registry data, or set UI_REGISTRY_STORAGE.");
     box.replaceChildren(
-      el("p", { textContent: "Garbage collection frees disk space from deleted images. It needs the registry stopped, so it runs on the host, not from this page." }),
-      seg,
-      el("ol", { className: "steps" },
-        el("li", { textContent: "Stop the registry the way you normally do (systemd, compose or Quadlet)." }),
-        el("li", {}, "Dry run, which lists what would be deleted.", codeBlock("Dry run", [gcCommand(tool, storage, true)])),
-        el("li", {}, "Collect.", codeBlock("Collect", [gcCommand(tool, storage, false)])),
-        el("li", { textContent: "Start the registry again." })),
+      el("p", { textContent: "Garbage collection frees disk space from deleted images. It runs on the host, not from this page." }),
+      el("div", { className: "segs" }, form, seg),
+      el("ol", { className: "steps" }, ...gcSteps(tool, storage)),
       el("p", { className: "mut", textContent: "Never add --delete-untagged: it deletes the child manifests of multi-arch images and breaks them." }),
       el("p", { className: "slabel", textContent: "Remove an empty repository (registry stopped)" }),
       el("p", { className: "mut", textContent: "The registry API cannot delete a repository, and garbage collection leaves its empty directory behind. With the registry stopped, remove the directory yourself:" }),
       codeBlock("Remove an empty repository", [rmRepoCommand("<repo>")]),
-      ...(cfg.registryStorage ? [] : [el("p", { className: "hint", textContent: "UI_REGISTRY_STORAGE is not set, so the command has the placeholder <registry-storage>. Replace it with the host path or volume name of the registry data, or set UI_REGISTRY_STORAGE." })]));
+      ...hints.map((h) => el("p", { className: "hint", textContent: h })));
   };
   draw();
   return el("section", {}, el("h3", { className: "ssec", textContent: "Garbage collection" }), box);
@@ -1780,7 +1861,8 @@ function helpPanel() {
 }
 
 // ---- Settings: one panel, changes apply as you make them ----------------------------------------------------------------
-const SETTING_KEYS = ["theme", "runtime", "tool", "os", "show", "sort", "sortSet", "live", "interval", "pageSize", "showEmpty"];
+const SETTING_KEYS = ["theme", "runtime", "tool", "os", "show", "repoSort", "tagSort", "packageSort", "live", "interval", "pageSize", "showEmpty"];
+const SORT_KEYS = ["repoSort", "tagSort", "packageSort"];
 function segmented(labelId, options, key, apply) { // options: [value, text, iconName?]. Arrow keys move and select, like radio buttons.
   const box = el("div", { className: "seg", role: "radiogroup", "aria-labelledby": labelId });
   const draw = () => box.replaceChildren(...options.map(([v, text, ico]) => el("button", {
@@ -1821,14 +1903,16 @@ function lifecycleRow() { // read only: the stages are set by the server
 }
 function applyPrefs(change) { // save a change and do what it needs, at once
   const before = { ...prefs };
-  Object.assign(prefs, change, "sort" in change && !("sortSet" in change) ? { sortSet: true } : {}); // Reset to defaults sends sortSet false
+  Object.assign(prefs, change);
   savePrefs();
   if (prefs.theme !== before.theme) applyTheme();
   if (prefs.live !== before.live) startLive();
   if (prefs.interval !== before.interval) startPoll();
   if (prefs.showEmpty !== before.showEmpty || prefs.show !== before.show) { resetHidden(); renderTree(); drawTypes(); }
-  if (prefs.sort !== before.sort) renderTree(); // the PyPI packages in the tree follow the sort too
-  if (prefs.runtime !== before.runtime || prefs.tool !== before.tool || prefs.os !== before.os || prefs.show !== before.show || prefs.sort !== before.sort || prefs.pageSize !== before.pageSize || prefs.showEmpty !== before.showEmpty) { resetShown(); void renderPane(true); }
+  const sorted = SORT_KEYS.some((k) => prefs[k] !== before[k]);
+  if (prefs.tagSort !== before.tagSort) for (const n of tree.byPath.values()) sortTags(n);
+  if (sorted) renderTree(); // the tree follows the sorts too
+  if (sorted || prefs.runtime !== before.runtime || prefs.tool !== before.tool || prefs.os !== before.os || prefs.show !== before.show || prefs.pageSize !== before.pageSize || prefs.showEmpty !== before.showEmpty) { resetShown(); void renderPane(true); }
 }
 function settings() {
   const controls = [];
@@ -1855,7 +1939,9 @@ function settings() {
       section("Commands", row("s-rt", "Container tool", "Used in the copyable container commands.", segmented("s-rt", [["podman", "podman"], ["docker", "docker"]], "runtime", apply)),
         ...(cfg.pypi ? [row("s-tool", "Python installer", "Used in the copyable Python commands.", segmented("s-tool", [["pip", "pip"], ["uv", "uv"]], "tool", apply)),
           row("s-os", "Operating system", "Linux and macOS get shell commands, Windows gets PowerShell.", segmented("s-os", [["linux", "Linux/macOS"], ["windows", "Windows"]], "os", apply))] : [])),
-      section("Lists", row("s-sort", "Sort by", "Order of tags and folders in lists.", segmented("s-sort", [["recent", "Recent"], ["name", "Name"]], "sort", apply)),
+      section("Lists", row("s-rsort", "Repositories", "Order of folders and repositories.", segmented("s-rsort", [["name", "Name"], ["recent", "Recent"]], "repoSort", apply)),
+        row("s-tsort", "Tags", "Order of a repository's tags. A push is when this UI saw it.", segmented("s-tsort", [["recent", "Recent push"], ["version", "Version"]], "tagSort", apply)),
+        ...(cfg.pypi ? [row("s-psort", "Python packages", "Order of packages.", segmented("s-psort", [["name", "Name"], ["recent", "Recent"]], "packageSort", apply))] : []),
         row("s-rows", "Rows per page", "Rows a list shows before Show more.", selectEl("s-rows", "pageSize", CHOICES.pageSize, String, apply)),
         row("s-empty", "Show empty repositories", "Repositories with no tags. The registry cannot delete them.", switchEl("s-empty", "showEmpty", apply))),
       section("Lifecycle", lifecycleRow()),
@@ -1955,7 +2041,7 @@ function applyPypi(list, flashNew) {
 }
 const pypiLabel = () => "PyPI" + (pypi.scope ? " · " + pypi.scope.path : cfg.pypi?.ref ? " · " + cfg.pypi.ref : "");
 const projectScope = () => pypi.scope?.kind === "project"; // one project's index, not a group's
-const pkgSort = (list) => [...list].sort(prefs.sort === "recent" ? (a, b) => (b.created || "").localeCompare(a.created || "") || byName(a, b) : byName);
+const pkgSort = (list) => [...list].sort(prefs.packageSort === "recent" ? (a, b) => (b.created || "").localeCompare(a.created || "") || byName(a, b) : byName);
 const pkgHit = (n, term) => n.key.includes(term) || n.name.toLowerCase().includes(term);
 const verHit = (n, term) => !pkgHit(n, term) && n.verList.some((v) => v.version.toLowerCase().includes(term));
 // The PyPI rows of the tree, after the registry's: the same row shape, so rendering and keys work unchanged.
@@ -2129,7 +2215,7 @@ function prootPane(n) {
     stats(plural(pkgs.length, "package"), plural(pypi.packages.length, "upload"), plural(projects.length, "project"), pypi.truncated ? "newest uploads only (UI_PYPI_MAX_PACKAGES)" : ""),
     el("p", { className: "reporef" }, copyValue(groupIndex(), "Copy the index URL")),
     ...listView({
-      id: "pkgs", items: pkgs, tie: byName, defaultCmp: prefs.sort === "recent" ? (a, b) => (b.created || "").localeCompare(a.created || "") || byName(a, b) : byName,
+      id: "pkgs", items: pkgs, tie: byName, defaultCmp: prefs.packageSort === "recent" ? (a, b) => (b.created || "").localeCompare(a.created || "") || byName(a, b) : byName,
       columns: [
         { key: "name", label: "Package", val: (p) => p.key, cmp: collator.compare },
         { key: "latest", label: "Latest", val: (p) => p.latest, cmp: verCompare },
@@ -2189,12 +2275,18 @@ function projectsList(n) { // which GitLab projects hold a copy of the package, 
 function pkgPane(n) {
   const blocked = pypiNotice(n);
   if (blocked) return showMain(...blocked);
-  const entries = new Map();
-  const entry = (v) => {
-    if (!entries.has(v)) entries.set(v, versionRow(v));
-    return entries.get(v);
-  };
-  const versions = () => listView({
+  const versions = () => {
+    const pick = canDeletePypi() ? pickBar({ id: "vers:" + n.key, key: (v) => v.version, keep: (k) => n.versions.has(k), noun: "version",
+      cost: (keys) => uploadsOf(n, keys).length, costNoun: "upload", onDelete: (keys) => deleteVersions(n, keys) }) : null;
+    const entries = new Map();
+    const entry = (v) => {
+      if (!entries.has(v)) {
+        entries.set(v, versionRow(v));
+        pick?.row(entries.get(v).tr, v);
+      }
+      return entries.get(v);
+    };
+    const list = listView({
     id: "vers:" + n.key, items: n.verList, tie: (a, b) => verCompare(b.version, a.version), defaultCmp: (a, b) => verCompare(b.version, a.version),
     columns: [
       { key: "version", label: "Version", val: (v) => v.version, cmp: verCompare },
@@ -2207,10 +2299,12 @@ function pkgPane(n) {
       { key: "created", label: "Uploaded", val: (v) => secs(v.created), cmp: numCmp },
       { key: "downloaded", label: "Last download", val: (v) => secs(v.downloaded), cmp: numCmp },
     ],
-    match: (v, t) => v.version.toLowerCase().includes(t), placeholder: "Filter versions",
-    row: (v) => entry(v).tr, onDraw: (vis) => vis.forEach((v) => lazyWatch(entry(v))),
+    match: (v, t) => v.version.toLowerCase().includes(t), placeholder: "Filter versions", lead: pick?.head,
+    row: (v) => entry(v).tr, onDraw: (vis) => { vis.forEach((v) => lazyWatch(entry(v))); pick?.shown(vis); },
     lateKeys: ["requires", "built", "platforms", "count", "size"], onLate: (redraw) => { lazy.redraw = redraw; },
-  });
+    });
+    return pick ? [pick.bar, ...list] : list;
+  };
   showMain(pypiCrumbs(n), el("h2", {}, el("span", { className: "ico" }, icon("pkg")), `${n.name} `, el("span", { className: "mut", textContent: n.latest })),
     stats(plural(n.verList.length, "version"), plural(n.uploads.length, "upload"), plural(n.projects.length, "project")),
     ...tabSet("pkg", [["versions", "Versions", versions], ["projects", `Projects (${n.projects.length})`, () => projectsList(n)]]),
@@ -2278,6 +2372,54 @@ function verPane(n) {
     ...(n.uploads.length > 1 ? [el("p", { className: "hint", textContent: "Several projects hold this version. The group index serves one of them, and their files can differ." })] : []),
     pypiCommandsEl({ name: pkg.name, version: n.version, project: n.uploads[0].projectId }, "Use this version"),
     ...(n.uploads.length > 1 ? copiesList(n) : [el("h3", { textContent: "Files" }), uploadSection(n.uploads[0])]));
+}
+
+// ---- PyPI delete: versions of one package, every copy of each, with the delete token (GITLAB_DELETE_TOKEN_FILE) on the server ----------
+const canDeletePypi = () => canWrite() && !!cfg.pypi?.delete;
+const uploadsOf = (n, keys) => n.verList.filter((v) => keys.has(v.version)).flatMap((v) => v.uploads);
+async function deleteVersions(n, keys) {
+  const vers = n.verList.filter((v) => keys.has(v.version)), uploads = uploadsOf(n, keys);
+  if (!(await confirmDeleteVersions(n, vers, uploads))) return;
+  let results;
+  try {
+    banner("");
+    results = (await api("/api/pypi/delete", { ids: uploads.map((u) => u.id) })).results;
+  } catch (e) { banner(e.message, true); return; }
+  const failed = new Set(results.filter((r) => r.status === "failed").map((r) => r.version));
+  const st = stateOf("vers:" + n.key);
+  for (const k of keys) if (!failed.has(k)) st.picked.delete(k); // a failed version stays picked, to retry or look at
+  await pypiSync();
+  await deleteResults(n.name, results.map((r) => ({ ...r, tag: r.name ? `${r.name}==${r.version}` : `upload ${r.id}`, detail: r.project })), "upload");
+  await renderPane();
+}
+// Resolves to true or false.
+function confirmDeleteVersions(n, vers, uploads) {
+  return new Promise((resolve) => {
+    let result = false;
+    const projects = uniq(uploads.map((u) => u.project)), shared = vers.filter((v) => v.uploads.length > 1);
+    const go = el("button", { type: "button", className: "primary dangerfill", textContent: `Delete ${plural(vers.length, "version")}` });
+    go.onclick = () => { result = true; dlg.close(); };
+    const cancel = el("button", { type: "button", textContent: "Cancel", onclick: () => dlg.close() });
+    const warn = [];
+    if (vers.length === n.verList.length) warn.push(el("p", { className: "dlg-warn", role: "alert", textContent: `These are all the versions of ${n.name}, so the package leaves the index.` }));
+    if (shared.length) warn.push(el("p", { className: "dlg-warn", textContent: `${plural(shared.length, "version")} ${shared.length === 1 ? "is" : "are"} held by several projects, and every copy goes: ${namesOf(shared.map((v) => v.version))}.` }));
+    const dlg = el("dialog", { className: "settings transfer", "aria-labelledby": "y-title", "aria-describedby": "y-scope" },
+      el("div", { className: "shead" }, el("h2", { id: "y-title", textContent: `Delete ${plural(vers.length, "version")}` }),
+        el("button", { type: "button", className: "iconbtn", "aria-label": "Close", onclick: () => dlg.close() }, icon("close"))),
+      el("div", { className: "sbody" },
+        el("div", { className: "srccard" }, el("div", { className: "srcname" }, el("span", { className: "ico" }, icon("pkg")), el("code", { textContent: n.name })),
+          el("div", { className: "srcmeta mut" }, el("span", { textContent: `${plural(vers.length, "version")} selected` }), el("span", { textContent: plural(uploads.length, "upload") }), el("span", { textContent: plural(projects.length, "project") }))),
+        ...warn,
+        el("p", { className: "scope", id: "y-scope", textContent: "Deletes each upload and its files from GitLab. This cannot be undone: pip can no longer install these versions from this index." }),
+        el("div", { className: "xlabel", textContent: "Selected versions" }), chipsOf(vers.map((v) => v.version)),
+        el("div", { className: "xlabel", textContent: "Projects" }), chipsOf(projects)),
+      el("div", { className: "sfoot" }, cancel, go));
+    dlg.addEventListener("click", (e) => { if (e.target === dlg) dlg.close(); });
+    dlg.addEventListener("close", () => { dlg.remove(); resolve(result); });
+    document.body.append(dlg);
+    dlg.showModal();
+    cancel.focus(); // several uploads go at once: Enter does not delete
+  });
 }
 
 // ---- PyPI live updates: a named "pypi" event on the same stream, and /api/pypi/seq while the stream is down ----------------

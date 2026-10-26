@@ -74,6 +74,9 @@ class Config:
         self.registry_storage = env.get("UI_REGISTRY_STORAGE", "").strip()  # display only: where the registry keeps its data, for the garbage collection command
         if self.registry_storage and not valid_storage(self.registry_storage):
             raise ValueError("UI_REGISTRY_STORAGE must be an absolute path such as /data/registry or a volume name")
+        self.registry_service = env.get("UI_REGISTRY_SERVICE", "").strip()  # display only: the registry's compose service, for the garbage collection command
+        if self.registry_service and not (len(self.registry_service) <= 63 and VOLUME_RE.fullmatch(self.registry_service)):
+            raise ValueError("UI_REGISTRY_SERVICE must be a compose service name such as registry")
         self.registry_host = env.get("UI_REGISTRY_HOST", "").strip()  # what clients type to reach the registry, shown in the pull and push commands
         if self.registry_host and not HOST_RE.fullmatch(self.registry_host):
             raise ValueError("UI_REGISTRY_HOST must be host or host:port, without a scheme or path")
@@ -276,7 +279,7 @@ def routes(cfg):
         "/api/config": lambda q: {"csrf": cfg.csrf, "readonly": cfg.readonly, "deleteEnabled": c.delete_enabled(),
                                   "registry": cfg.registry_url,
                                   "registryHost": cfg.registry_host or urllib.parse.urlsplit(cfg.registry_url).netloc,
-                                  "registryHostSet": bool(cfg.registry_host), "environments": cfg.environments, "registryStorage": cfg.registry_storage,
+                                  "registryHostSet": bool(cfg.registry_host), "environments": cfg.environments, "registryStorage": cfg.registry_storage, "registryService": cfg.registry_service,
                                   "version": cfg.version, "revision": cfg.revision, "login": cfg.login_url, "logout": cfg.logout_url, "maxBatch": R.MAX_BATCH,
                                   "pypi": cfg.pypi.config() if cfg.pypi else None},
         "/api/repos": lambda q: sorted(c.catalog()),
@@ -310,7 +313,16 @@ def routes(cfg):
             except G.GitLabError as e:
                 raise R.RegistryError(e.status, e.message) from None
 
+        def pypi_delete(b):
+            if not y.deleter:
+                raise R.RegistryError(403, "Deleting Python packages is off: GITLAB_DELETE_TOKEN_FILE is not set")
+            try:
+                return {"results": y.delete(b["ids"])}
+            except G.GitLabError as e:
+                raise R.RegistryError(e.status, e.message) from None
+
         get.update({"/api/pypi/packages": pypi_packages, "/api/pypi/files": pypi_files, "/api/pypi/seq": lambda q: {"seq": y.catalog.seq}})
+        post["/api/pypi/delete"] = pypi_delete
     return get, post
 
 
@@ -368,9 +380,14 @@ class Handler(BaseHTTPRequestHandler):
             pseq = self.cfg.pypi.catalog.seq if watch_pypi else 0
             self.wfile.write(b"retry: 5000\n\n")
             self.wfile.flush()
-            idle = 0
+            idle, sent = 0, None
             while not self.hung_up():
                 now = self.cfg.state.wait(seq, 1)
+                poll = self.cfg.poller.next_poll if self.cfg.poller else None
+                if poll and poll != sent:  # when the registry is walked next, for the countdown line
+                    sent = poll
+                    self.wfile.write(b"event: poll\ndata: %s\n\n" % json.dumps({"left": round(max(0, poll[0] - time.time()), 1), "wait": poll[1]}).encode())
+                    self.wfile.flush()
                 if watch_pypi and self.cfg.pypi.catalog.seq != pseq:  # a named event, so the browser reloads only the PyPI list
                     pseq = self.cfg.pypi.catalog.seq
                     self.wfile.write(b"event: pypi\ndata: %d\n\n" % pseq)
@@ -412,7 +429,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(401, {"error": "log in to make changes"})
         if not csrf_ok(self.cfg, self.headers):
             return self.reply(403, {"error": "CSRF check failed"})
-        self.reply(200, self.post[path](self.read_json(MAX_BATCH_BODY if path == "/api/delete-tags" else MAX_BODY)))
+        self.reply(200, self.post[path](self.read_json(MAX_BATCH_BODY if path in ("/api/delete-tags", "/api/pypi/delete") else MAX_BODY)))
 
     def pypi_locked(self):
         """PyPI data needs a login: an auth proxy is in front, the packages are not public, and this request has no user."""
