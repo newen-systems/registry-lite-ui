@@ -277,8 +277,15 @@ def routes(cfg):
             cfg.poller.wake()
         return out
 
+    def delete_enabled():
+        """None while the registry is unreachable, so a PyPI-only UI still gets its config, PyPI delete included."""
+        try:
+            return c.delete_enabled()
+        except R.RegistryError:
+            return None
+
     get = {
-        "/api/config": lambda q: {"csrf": cfg.csrf, "readonly": cfg.readonly, "deleteEnabled": c.delete_enabled(),
+        "/api/config": lambda q: {"csrf": cfg.csrf, "readonly": cfg.readonly, "deleteEnabled": delete_enabled(),
                                   "registry": cfg.registry_url,
                                   "registryHost": cfg.registry_host or urllib.parse.urlsplit(cfg.registry_url).netloc,
                                   "registryHostSet": bool(cfg.registry_host), "environments": cfg.environments, "registryStorage": cfg.registry_storage, "registryService": cfg.registry_service,

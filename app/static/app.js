@@ -1217,7 +1217,7 @@ const canWrite = () => !cfg.readonly && (!cfg.login || cfg.user); // with an aut
 function notice() {
   if (cfg.readonly) return "Read-only mode.";
   if (!canWrite()) return "Log in to copy, move or delete.";
-  return cfg.deleteEnabled ? "" : "Deletion is disabled on this registry (REGISTRY_STORAGE_DELETE_ENABLED is not true). Move and Delete will fail.";
+  return cfg.deleteEnabled !== false ? "" : "Deletion is disabled on this registry (REGISTRY_STORAGE_DELETE_ENABLED is not true). Move and Delete will fail.";
 }
 
 // ---- Routing: #/ (registry), #/recent, #/dir/<path>, #/repo/<name>[:<tag>[@<digest>]] ---------------------------------------
