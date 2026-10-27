@@ -4,6 +4,10 @@ registry-lite-ui is a web UI for a plain `registry:2` that browses, copies, move
 
 `podman-compose up -d` with `compose.yml` (registry and UI), or `podman-compose -f compose.ui.yml up -d` with `REGISTRY_URL` set for a registry that already runs. `docker compose` works the same way. Pin `UI_IMAGE` to a version or a digest in your `.env`.
 
+## Changes in 0.2.7
+
+- Fixed: with PyPI only and no registry to reach, `/api/config` answered 502, so the page never learned that PyPI delete was on and hid it. The config now loads without a registry, with `deleteEnabled` null, and the "Deletion is disabled" notice shows only when the registry says so.
+
 ## Changes in 0.2.6
 
 - Shift-click selects a range of tags for Delete selected: every row shown from the last one clicked to this one. A click on a row outside its links ticks it too.

@@ -1026,6 +1026,12 @@ class PypiSource(unittest.TestCase):
             with self.assertRaises(R.RegistryError, msg=bad):
                 S.routes(cfg)[1]["/api/pypi/delete"]({"ids": bad})
 
+    def test_config_without_a_registry_still_offers_pypi_delete(self):
+        cfg, _ = self.serve({**self.env, "GITLAB_DELETE_TOKEN": DELETE_TOKEN, "REGISTRY_URL": "http://127.0.0.1:1"})
+        out = S.routes(cfg)[0]["/api/config"]({})  # PyPI only: no registry to probe, and the config must not fail
+        self.assertIsNone(out["deleteEnabled"])
+        self.assertTrue(out["pypi"]["delete"])
+
     def test_delete_refused_by_gitlab_says_why(self):
         cfg, _ = self.serve({**self.env, "GITLAB_DELETE_TOKEN": "a-read-only-token"})
         out = S.routes(cfg)[1]["/api/pypi/delete"]({"ids": [1]})["results"]
