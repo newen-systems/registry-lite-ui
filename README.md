@@ -51,7 +51,7 @@ Set on the `registry-lite-ui` service. The full set is `Config` in `app/server.p
 `.env`:
 
 ```sh
-UI_IMAGE=ghcr.io/newen-systems/registry-lite-ui:0.2.1
+UI_IMAGE=ghcr.io/newen-systems/registry-lite-ui:0.2.20
 UI_REGISTRY_HOST=registry.example.internal:5000
 ```
 
@@ -60,6 +60,43 @@ UI_REGISTRY_HOST=registry.example.internal:5000
 ```sh
 docker compose up -d   # registry on :5000 as before, UI on http://localhost:8080
 ```
+
+`compose.yml` is the base. Each feature (login, HTTPS, PyPI) is a separate file in [Overrides](#overrides) that you add to it with another `-f`, rather than one full file per mix of features. Compose merges the files in order: a later file adds to the services of the earlier ones and replaces any value they both set.
+
+```sh
+# registry, UI and an OIDC login
+docker compose -f compose.yml -f compose.oidc.yml up -d
+# the same over HTTPS, with the PyPI source
+docker compose -f compose.yml -f compose.oidc.yml -f compose.oidc-tls.yml -f compose.pypi.yml up -d
+# what the merged files add up to
+docker compose -f compose.yml -f compose.oidc.yml config
+```
+
+- Give the same `-f` list to every command (`up`, `down`, `logs`, `ps`). A command with fewer files sees a different set of services.
+- `podman-compose` takes the same flags. Use 1.2 or newer, as the overrides use `!reset`.
+
+### Under systemd
+
+A unit that starts the stack at boot with podman-compose. The `-f` list is the one you would type by hand.
+
+```ini
+# /etc/systemd/system/container-registry.service
+[Unit]
+Description=Registry and registry-lite-ui
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+WorkingDirectory=/opt/registry-lite-ui
+ExecStart=/usr/bin/podman-compose -f compose.yml -f compose.oidc.yml -f compose.oidc-tls.yml up
+ExecStop=/usr/bin/podman-compose -f compose.yml -f compose.oidc.yml -f compose.oidc-tls.yml down
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`systemctl daemon-reload && systemctl enable --now container-registry`. `up` without `-d` stays in the foreground, so systemd sees the stack stop and restarts it.
 
 ## Image
 
@@ -82,7 +119,7 @@ A release is `X.Y.Z`, `X.Y`, `X` and `latest`; main is `edge`; every build has i
 
 ## Overrides
 
-Add each with `-f`, after `compose.yml` (or after `compose.ui.yml` for a registry that already runs elsewhere).
+Add each with `-f`, after `compose.yml` (or after `compose.ui.yml` for a registry that already runs elsewhere), as in [Usage](#usage).
 
 | File | Adds | Set |
 |---|---|---|
