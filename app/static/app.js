@@ -663,9 +663,11 @@ function codeBlock(label, lines) {
   let timer = 0;
   const btn = el("button", { type: "button", className: "copy", textContent: "Copy", "aria-label": "Copy " + label, "aria-live": "polite" });
   btn.onclick = async () => {
-    btn.textContent = (await copyText(text, pre)) ? "Copied" : "Press Ctrl/Cmd+C";
+    const ok = await copyText(text, pre);
+    btn.textContent = ok ? "Copied" : "Press Ctrl/Cmd+C";
+    btn.classList.toggle("ok", ok);
     clearTimeout(timer);
-    timer = setTimeout(() => { btn.textContent = "Copy"; }, 1600);
+    timer = setTimeout(() => { btn.textContent = "Copy"; btn.classList.remove("ok"); }, 1600);
   };
   return el("figure", { className: "code" }, el("figcaption", {}, el("span", { textContent: label }), btn), pre);
 }
@@ -2499,7 +2501,8 @@ async function pypiSync() {
 }
 
 // The sidebar's type filter: all, containers, Helm charts or python. A funnel beside Filter, shown when there is more than one type
-// to pick from, opens the choices as a popover (Escape and a click outside close it). The funnel takes the accent while it filters.
+// to pick from, opens the choices as a popover. It stays open while the choice changes, and Escape or a click outside closes it.
+// The funnel takes the accent while it filters.
 function drawTypes() {
   const box = $("types"), btn = $("typesbtn"), helm = tree.helm.size > 0 || helmOnly();
   btn.hidden = !cfg.pypi && !helm;
@@ -2509,9 +2512,11 @@ function drawTypes() {
   btn.classList.toggle("on", prefs.show !== "all");
   btn.title = label; btn.setAttribute("aria-label", label);
   if (!btn.firstChild) btn.append(icon("funnel"));
+  const focused = box.contains(document.activeElement); // redrawn on each change, so keep the keyboard's place
   box.replaceChildren(el("fieldset", {}, el("legend", { textContent: "Show" }), ...opts.map(([v, text, ic]) => el("label", {},
-    el("input", { type: "radio", name: "show", value: v, checked: v === prefs.show, onchange: () => { box.hidePopover(); applyPrefs({ show: v }); } }),
+    el("input", { type: "radio", name: "show", value: v, checked: v === prefs.show, onchange: () => applyPrefs({ show: v }) }),
     ic ? ic() : el("span", { className: "noicon" }), text))));
+  if (focused) box.querySelector("input:checked").focus();
 }
 $("types").addEventListener("toggle", (e) => { // under the funnel, kept inside the window
   if (e.newState !== "open") return;

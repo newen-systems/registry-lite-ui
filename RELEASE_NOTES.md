@@ -4,6 +4,12 @@ registry-lite-ui is a web UI for a plain `registry:2` that browses, copies, move
 
 `podman-compose up -d` with `compose.yml` (registry and UI), or `podman-compose -f compose.ui.yml up -d` with `REGISTRY_URL` set for a registry that already runs. `docker compose` works the same way. Pin `UI_IMAGE` to a version or a digest in your `.env`.
 
+## Changes in 0.2.19
+
+- The type filter stays open while you change the choice. A click outside or Escape closes it.
+- Settings comes before Help in the header.
+- A code block's Copy button turns green while it says Copied, like the copy icons elsewhere.
+
 ## Changes in 0.2.18
 
 - The type filter's funnel is solid blue while it filters and a grey outline on All types, so a filtered tree is easier to spot.
