@@ -1404,7 +1404,7 @@ function startLive() {
 }
 // The countdown pie beside "live, checked": the time to the next walk of the registry (sent on the stream as it is scheduled, so it
 // follows UI_POLL_INTERVAL, the burst during a push and the back-off), or to the next fallback poll while the stream is down.
-// The accent slice shrinks and the refresh comes when it is gone. With reduced motion it moves in one-second steps.
+// The accent slice shrinks clockwise and the refresh comes when it is gone. With reduced motion it moves in one-second steps.
 const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
 let tickTimer = 0;
 function countdown(left, wait) { // seconds
