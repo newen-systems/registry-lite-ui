@@ -4,6 +4,10 @@ registry-lite-ui is a web UI for a plain `registry:2` that browses, copies, move
 
 `podman-compose up -d` with `compose.yml` (registry and UI), or `podman-compose -f compose.ui.yml up -d` with `REGISTRY_URL` set for a registry that already runs. `docker compose` works the same way. Pin `UI_IMAGE` to a version or a digest in your `.env`.
 
+## Changes in 0.2.13
+
+- The sidebar type filter is a Show list (All, Containers, Helm charts, Python) instead of a row of buttons. Four buttons did not fit a sidebar narrower than about 240 pixels.
+
 ## Changes in 0.2.12
 
 - In a tag list, neighbouring rows on one manifest digest (`latest` and `1.2.3`, say) are joined by a line with a circle per row in the Digest column. Its tooltip names every tag on that digest. Sort by Digest to bring them all together.
