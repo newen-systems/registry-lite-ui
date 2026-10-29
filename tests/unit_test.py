@@ -1213,6 +1213,14 @@ class Routes(unittest.TestCase):
         self.assertEqual(e.exception.status, 404)
         self.assertIn("push in progress", e.exception.message)
         self.assertEqual(self.get["/api/recent"]({"limit": ["-5"]})["events"], [])
+
+    def test_tagnames_lists_helm_repositories(self):
+        self.cfg.state.update({"charts/app", "img/app"}, {"charts/app:1.0": D("1"), "img/app:1": D("2"), "img/app:2": D("3")})
+        self.cfg.state.learn(D("1"), False, "helm")
+        self.cfg.state.learn(D("2"), False, "image")  # D("3") not read yet: no kind, so not a chart
+        out = self.get["/api/tagnames"]({})
+        self.assertEqual(out["helm"], ["charts/app"])
+        self.assertEqual(out["repos"], {"charts/app": ["1.0"], "img/app": ["1", "2"]})
         self.assertTrue(self.get["/api/config"]({})["deleteEnabled"])
         # the pull host: the explicit setting, else the host:port of REGISTRY_URL
         def host(env):
@@ -1253,13 +1261,13 @@ class Routes(unittest.TestCase):
     def test_tagnames_groups_the_pollers_tags_by_repository(self):
         self.cfg.state.tags = {"a/app:v2": {}, "a/app:v1": {}, "b:latest": {}}
         self.cfg.state.empty = {"gone/repo"}
-        self.assertEqual(self.get["/api/tagnames"]({}), {"repos": {"a/app": ["v1", "v2"], "b": ["latest"]}, "truncated": False, "empty": ["gone/repo"]})
+        self.assertEqual(self.get["/api/tagnames"]({}), {"repos": {"a/app": ["v1", "v2"], "b": ["latest"]}, "truncated": False, "empty": ["gone/repo"], "helm": []})
         S.MAX_TAGNAMES, cap = 2, S.MAX_TAGNAMES
         try:
             capped = self.get["/api/tagnames"]({})
         finally:
             S.MAX_TAGNAMES = cap
-        self.assertEqual(capped, {"repos": {"a/app": ["v1", "v2"]}, "truncated": True, "empty": ["gone/repo"]})
+        self.assertEqual(capped, {"repos": {"a/app": ["v1", "v2"]}, "truncated": True, "empty": ["gone/repo"], "helm": []})
 
     def test_parents_names_the_tagged_indexes_that_list_a_digest(self):
         parents = self.get["/api/parents"]

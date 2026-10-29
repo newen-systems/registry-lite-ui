@@ -4,6 +4,10 @@ registry-lite-ui is a web UI for a plain `registry:2` that browses, copies, move
 
 `podman-compose up -d` with `compose.yml` (registry and UI), or `podman-compose -f compose.ui.yml up -d` with `REGISTRY_URL` set for a registry that already runs. `docker compose` works the same way. Pin `UI_IMAGE` to a version or a digest in your `.env`.
 
+## Changes in 0.2.9
+
+- A Helm filter in the sidebar shows only the repositories that hold Helm charts, in the tree, the repository lists and Recent. It shows once the poller has read a chart, with or without the PyPI source, beside All, Containers and Python. `/api/tagnames` lists those repositories in `helm`.
+
 ## Changes in 0.2.8
 
 - A tag's page has a Pinned tag field beside Image and Pinned: `host/repo:tag@sha256:<digest>`, with a copy button. Pulling it checks the digest and keeps the tag name in the reference.

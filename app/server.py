@@ -236,12 +236,13 @@ def routes(cfg):
         with cfg.state.cond:
             refs = list(cfg.state.tags)  # copied under the lock, sorted and capped outside it
             empty = cfg.state.empty.copy()
+            helm = {P.repo_of(k) for k, v in cfg.state.tags.items() if cfg.state.meta.get(v.get("digest"), {}).get("kind") == "helm"}
         refs.sort()
         out = {}
         for ref in refs[:MAX_TAGNAMES]:
             repo, _, tag = ref.rpartition(":")
             out.setdefault(repo, []).append(tag)
-        return {"repos": out, "truncated": len(refs) > MAX_TAGNAMES, "empty": sorted(empty)[:MAX_TAGNAMES]}
+        return {"repos": out, "truncated": len(refs) > MAX_TAGNAMES, "empty": sorted(empty)[:MAX_TAGNAMES], "helm": sorted(helm)[:MAX_TAGNAMES]}
 
     def parents(q):  # the tagged indexes that list a digest as a child: what delete and move would refuse (409), shown up front
         repo, digest = R.check_repo(one(q, "repo")), one(q, "digest")
