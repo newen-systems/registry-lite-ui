@@ -1155,7 +1155,8 @@ function manifestProps(n, m, path, sharing) {
   const props = [];
   const kind = artifactKind(m);
   if (kind !== "image") props.push(tableRow("Type", kind === "helm" ? KIND_LABEL.helm : `${KIND_LABEL.artifact}, ${m.configType}`));
-  if (n.kind === "tag") props.push(tableRow("Image", copyValue(`${host}/${path}:${n.tag}`, "Copy image reference")));
+  if (n.kind === "tag") props.push(tableRow("Image", copyValue(`${host}/${path}:${n.tag}`, "Copy image reference")),
+    tableRow("Pinned tag", copyValue(`${host}/${path}:${n.tag}@${m.digest}`, "Copy tag reference pinned to its digest")));
   props.push(tableRow("Pinned", copyValue(`${host}/${path}@${m.digest}`, "Copy pinned image reference")), tableRow("Digest", copyValue(m.digest, "Copy digest")),
     tableRow("Media type", code(m.mediaType)), tableRow("Manifest size", size(m.size)));
   if (m.layers.length) props.push(tableRow("Layers size", size(layersTotal(m))));
