@@ -10,7 +10,7 @@
   --acc:#2457d6; --acc-fg:#fff; --acc-soft:#e7eefc; --hover:#f0f3f8; --focus:#2457d6;
   --bad:#c62833; --ok:#1a7f37; --amber:#8a5a00; --warn:#fff6cf; --warn-line:#ecd98a;
   --ico:#566074; --whale:#1f86d8; --guide:#b9c1cd; --flash:#fff0a0;
-  --code-bg:#1d2530; --code-head:#2a3443; --code-fg:#e6edf3; --code-mut:#9aa6b6; --code-cmd:#f0d97a; --code-btn:#ffffff1a;
+  --code-bg:#1d2530; --code-head:#2a3443; --code-fg:#e6edf3; --code-ok:#3fb950; --code-mut:#9aa6b6; --code-cmd:#f0d97a; --code-btn:#ffffff1a;
   --shadow:0 1px 2px #1620330d, 0 4px 14px -6px #16203314;
   color-scheme:light;
 }
@@ -139,7 +139,7 @@ tr:hover > td { background:var(--hover); }
 @media (prefers-color-scheme: dark) { :root:not(.light) .code { border-color:var(--line); } }
 .code figcaption { display:flex; align-items:center; justify-content:space-between; gap:var(--s3); padding:var(--s1) var(--s2) var(--s1) var(--s4); background:var(--code-head); color:var(--code-mut); font-size:12.5px; }
 .code .copy { height:26px; border:0; background:none; color:var(--code-fg); font-size:12.5px; min-width:5.5em; }
-.code .copy:hover:not(:disabled) { background:var(--code-btn); }
+.code .copy:hover:not(:disabled) { background:var(--code-btn); } .code .copy.ok { color:var(--code-ok); } /* green like the other Copied notes */
 .code pre { margin:0; padding:var(--s3) var(--s4); overflow-x:auto; max-width:100%; font:13px/1.8 var(--mono); counter-reset:ln; scrollbar-width:thin; scrollbar-color:var(--code-mut) transparent; }
 .code pre:focus-visible { outline-offset:-2px; }
 .code pre::-webkit-scrollbar { height:10px; }
