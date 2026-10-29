@@ -103,6 +103,19 @@ Add each with `-f`, after `compose.yml` (or after `compose.ui.yml` for a registr
 - The OIDC issuer sends `email` with `email_verified` true, and a `groups` claim when `OIDC_ALLOWED_GROUPS` is set.
 - The PyPI token's user can read the group or project, or the index is public and the token file is empty.
 
+## Keycloak
+
+`compose.oidc.yml` works with Keycloak as the issuer. In the realm:
+
+1. Create an OpenID Connect client with Client authentication on, Standard flow on and Direct access grants off. Set PKCE to S256 (Advanced, Proof Key for Code Exchange).
+2. Set Valid redirect URIs to `https://<ui host>/oauth2/callback`, Web origins to `https://<ui host>` and Valid post logout redirect URIs to `https://<ui host>/*`.
+3. In `.env`, set `OIDC_ISSUER_URL=https://<keycloak host>/realms/<realm>`, `OIDC_CLIENT_ID` to the client ID, `OIDC_CLIENT_SECRET` from the client's Credentials tab, and `OIDC_REDIRECT_URL` to the redirect URI above.
+4. To admit only one group, set `OIDC_ALLOWED_GROUPS` to the group name, without a leading `/`. oauth2-proxy then asks for a `groups` scope, which Keycloak does not have by default, and the login fails with `invalid_scope`. Create a client scope named `groups` (Client scopes, Create, Include in token scope on). Give it a Group Membership mapper with Token claim name `groups` and Full group path off. Add the scope to the client as Default.
+
+- Users imported from LDAP or FreeIPA arrive with `email_verified` false, and oauth2-proxy refuses them after a good Keycloak login. If the directory vouches for its addresses, add a hardcoded-attribute mapper to the user federation that sets `emailVerified` to `true`.
+- Test with a directory account in the allowed group. A local account made in the admin console has a verified email and skips the federation, so it can log in while directory users cannot.
+- Group membership is checked at login. Removing someone from the group takes effect when their session cookie expires, after 7 days by default (`OAUTH2_PROXY_COOKIE_EXPIRE` in your own override shortens it).
+
 ## Behaviour
 
 - **Recent** is when the UI saw a change: the registry API has no push times, and pushes before the UI started are not in it. PyPI upload times come from GitLab.
