@@ -4,7 +4,8 @@ ARG BASE_IMAGE=registry.access.redhat.com/ubi9/python-312-minimal@sha256:8d99550
 FROM ${BASE_IMAGE}
 ARG APP_VERSION=dev
 ARG APP_REVISION=unknown
-ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 APP_VERSION=${APP_VERSION} APP_REVISION=${APP_REVISION}
+# Recent history goes to /state unless UI_STATE_DIR is set empty. Mount a volume there to keep it when the container is replaced.
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 APP_VERSION=${APP_VERSION} APP_REVISION=${APP_REVISION} UI_STATE_DIR=/state
 COPY app /app
 USER 0
 # files must be readable by uid 65534 whatever umask the build host checked them out with

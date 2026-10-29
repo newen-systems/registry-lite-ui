@@ -91,6 +91,9 @@ class Config:
             raise ValueError("UI_POLL_BURST and UI_POLL_BURST_MAX must be 0 or more seconds")
         self.sse_slots = threading.BoundedSemaphore(n("UI_MAX_SSE", 20))
         state_dir = env.get("UI_STATE_DIR")
+        if state_dir and not os.access(state_dir, os.W_OK):  # a read-only root without a volume: say so once, not at every save
+            log.warning("UI_STATE_DIR %s is not writable: history is kept in memory only", state_dir)
+            state_dir = None
         self.state = P.State(os.path.join(state_dir, "state.json") if state_dir else None, n("UI_MAX_EVENTS", 1000),
                              n("UI_MAX_EVENT_DAYS", 30) * 86400)
         self.poller = None
