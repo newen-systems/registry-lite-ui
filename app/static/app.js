@@ -1392,26 +1392,20 @@ function startLive() {
   if (!prefs.live) countdown(0, 0);
   liveLabel();
 }
-// The countdown line under the header: the time to the next walk of the registry (sent on the stream as it is scheduled, so it
+// The countdown pie beside "live, checked": the time to the next walk of the registry (sent on the stream as it is scheduled, so it
 // follows UI_POLL_INTERVAL, the burst during a push and the back-off), or to the next fallback poll while the stream is down.
-// The filled part shrinks right to left and the refresh comes when it is empty. With reduced motion it moves in one-second steps.
+// The accent slice shrinks and the refresh comes when it is gone. With reduced motion it moves in one-second steps.
 const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
 let tickTimer = 0;
 function countdown(left, wait) { // seconds
-  const bar = $("tick"), fill = bar.firstElementChild;
+  const pie = $("tick");
   clearInterval(tickTimer);
-  bar.hidden = !prefs.live || !(wait > 0);
-  if (bar.hidden) return;
+  pie.hidden = !prefs.live || !(wait > 0);
+  if (pie.hidden) return;
   const end = Date.now() + left * 1000, part = () => Math.min(1, Math.max(0, end - Date.now()) / 1000 / wait);
-  fill.style.transition = "none";
-  fill.style.transform = `scaleX(${part()})`;
-  if (reducedMotion.matches) {
-    tickTimer = setInterval(() => { fill.style.transform = `scaleX(${part()})`; if (!part()) clearInterval(tickTimer); }, 1000);
-    return;
-  }
-  void fill.offsetWidth; // start from the full part, then run it down
-  fill.style.transition = `transform ${left}s linear`;
-  fill.style.transform = "scaleX(0)";
+  const draw = () => { pie.style.setProperty("--p", part()); if (!part()) clearInterval(tickTimer); };
+  draw();
+  tickTimer = setInterval(draw, reducedMotion.matches ? 1000 : 100);
 }
 let pollTimer = 0, pollNext = 0;
 const pollSecs = () => Math.max(5, prefs.interval);
