@@ -4,6 +4,11 @@ registry-lite-ui is a web UI for a plain `registry:2` that browses, copies, move
 
 `podman-compose up -d` with `compose.yml` (registry and UI), or `podman-compose -f compose.ui.yml up -d` with `REGISTRY_URL` set for a registry that already runs. `docker compose` works the same way. Pin `UI_IMAGE` to a version or a digest in your `.env`.
 
+## Changes in 0.2.12
+
+- In a tag list, neighbouring rows on one manifest digest (`latest` and `1.2.3`, say) are joined by a line with a circle per row in the Digest column. Its tooltip names every tag on that digest. Sort by Digest to bring them all together.
+- Fixed: "Copied" beside a row's copy icon pushed every column to its right along. It now shows above the icon.
+
 ## Changes in 0.2.11
 
 - Recent for the registry survives a restart of the container however it is run. The image now sets `UI_STATE_DIR=/state`, so a plain `docker run` or a deployment without the variable writes `state.json` too. The compose files already did this with the `ui-state` volume. `UI_STATE_DIR=` (empty) keeps history in memory only, as before.

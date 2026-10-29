@@ -943,7 +943,7 @@ function lazyWatch(r) {
 function tagRow(t) { // a table row for a tag, whose kind, size, platforms and build time fill in later
   const plat = el("td", { className: "mut" }), sz = el("td", { className: "mut" }), built = el("td", { className: "mut" });
   const ico = el("span", { className: "ico" }, kindIcon(tagKind(t)), link(t, t.tag));
-  const r = { t, done: false };
+  const r = { t, done: false, link: el("span", { className: "dlink" }) };
   r.apply = (m) => {
     [plat.textContent, sz.textContent] = detailCells(m);
     const ms = createdMs(m);
@@ -956,8 +956,19 @@ function tagRow(t) { // a table row for a tag, whose kind, size, platforms and b
   if (cached) r.apply(cached);
   const ref = `${cfg.registryHost || "<REGISTRY>"}/${t.parent.path}:${t.tag}`;
   r.tr = el("tr", {}, el("td", {}, ico, rowCopy(ref, `Copy image reference for ${t.tag}`)),
-    el("td", { className: "nw" }, code(short(t.digest)), rowCopy(t.digest, `Copy digest for ${t.tag}`)), sz, plat, built, el("td", { className: "mut", textContent: ago(t.changed) }));
+    el("td", { className: "nw dcell" }, code(short(t.digest)), rowCopy(t.digest, `Copy digest for ${t.tag}`), r.link), sz, plat, built, el("td", { className: "mut", textContent: ago(t.changed) }));
   return r;
+}
+// Neighbouring rows on one digest are joined by a line in the Digest column: start, mid and end of each run.
+function linkDigests(n, rs) {
+  const tags = new Map();
+  for (const t of n.tagList) tags.set(t.digest, [...(tags.get(t.digest) || []), t.tag]);
+  rs.forEach((r, i) => {
+    const up = rs[i - 1]?.t.digest === r.t.digest, down = rs[i + 1]?.t.digest === r.t.digest;
+    if (up || down) r.tr.dataset.link = up && down ? "mid" : up ? "end" : "start";
+    else delete r.tr.dataset.link;
+    r.link.title = up || down ? "Same manifest: " + tags.get(r.t.digest).join(", ") : "";
+  });
 }
 function tagsList(n) {
   lazyReset();
@@ -975,7 +986,7 @@ function tagsList(n) {
   const list = listView({
     id: "tags:" + n.path, items: n.tagList, columns: TAG_COLUMNS, defaultCmp: tagDefault, tie: (a, b) => tagCompare(b.tag, a.tag),
     match: (t, text) => t.tag.toLowerCase().includes(text), placeholder: "Filter tags", lead: pick?.head,
-    row: (t) => entry(t).tr, onDraw: (vis) => { vis.forEach((t) => lazyWatch(entry(t))); pick?.shown(vis); },
+    row: (t) => entry(t).tr, onDraw: (vis) => { linkDigests(n, vis.map(entry)); vis.forEach((t) => lazyWatch(entry(t))); pick?.shown(vis); },
     lateKeys: ["size", "platforms", "created"], onLate: (redraw) => { lazy.redraw = redraw; },
   });
   return pick ? [pick.bar, ...list] : list;
