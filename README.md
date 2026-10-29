@@ -51,7 +51,7 @@ Set on the `registry-lite-ui` service. The full set is `Config` in `app/server.p
 `.env`:
 
 ```sh
-UI_IMAGE=ghcr.io/newen-systems/registry-lite-ui:0.2.1
+UI_IMAGE=ghcr.io/newen-systems/registry-lite-ui:0.2.20
 UI_REGISTRY_HOST=registry.example.internal:5000
 ```
 
@@ -60,6 +60,43 @@ UI_REGISTRY_HOST=registry.example.internal:5000
 ```sh
 docker compose up -d   # registry on :5000 as before, UI on http://localhost:8080
 ```
+
+`compose.yml` is the base. Each feature (login, HTTPS, PyPI) is a separate file in [Overrides](#overrides) that you add to it with another `-f`, rather than one full file per mix of features. Compose merges the files in order: a later file adds to the services of the earlier ones and replaces any value they both set.
+
+```sh
+# registry, UI and an OIDC login
+docker compose -f compose.yml -f compose.oidc.yml up -d
+# the same over HTTPS, with the PyPI source
+docker compose -f compose.yml -f compose.oidc.yml -f compose.oidc-tls.yml -f compose.pypi.yml up -d
+# what the merged files add up to
+docker compose -f compose.yml -f compose.oidc.yml config
+```
+
+- Give the same `-f` list to every command (`up`, `down`, `logs`, `ps`). A command with fewer files sees a different set of services.
+- `podman-compose` takes the same flags. Use 1.2 or newer, as the overrides use `!reset`.
+
+### Under systemd
+
+A unit that starts the stack at boot with podman-compose. The `-f` list is the one you would type by hand.
+
+```ini
+# /etc/systemd/system/container-registry.service
+[Unit]
+Description=Registry and registry-lite-ui
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+WorkingDirectory=/opt/registry-lite-ui
+ExecStart=/usr/bin/podman-compose -f compose.yml -f compose.oidc.yml -f compose.oidc-tls.yml up
+ExecStop=/usr/bin/podman-compose -f compose.yml -f compose.oidc.yml -f compose.oidc-tls.yml down
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`systemctl daemon-reload && systemctl enable --now container-registry`. `up` without `-d` stays in the foreground, so systemd sees the stack stop and restarts it.
 
 ## Image
 
@@ -82,7 +119,7 @@ A release is `X.Y.Z`, `X.Y`, `X` and `latest`; main is `edge`; every build has i
 
 ## Overrides
 
-Add each with `-f`, after `compose.yml` (or after `compose.ui.yml` for a registry that already runs elsewhere).
+Add each with `-f`, after `compose.yml` (or after `compose.ui.yml` for a registry that already runs elsewhere), as in [Usage](#usage).
 
 | File | Adds | Set |
 |---|---|---|
@@ -102,6 +139,19 @@ Add each with `-f`, after `compose.yml` (or after `compose.ui.yml` for a registr
 - The overrides add to the service named `registry-lite-ui`. Renaming that service leaves the override as a second service without an image, and compose refuses to start (`has neither an image nor a build context`). To name the container, keep the service and set `container_name` in your own override file.
 - The OIDC issuer sends `email` with `email_verified` true, and a `groups` claim when `OIDC_ALLOWED_GROUPS` is set.
 - The PyPI token's user can read the group or project, or the index is public and the token file is empty.
+
+## Keycloak
+
+`compose.oidc.yml` works with Keycloak as the issuer. In the realm:
+
+1. Create an OpenID Connect client with Client authentication on, Standard flow on and Direct access grants off. Set PKCE to S256 (Advanced, Proof Key for Code Exchange).
+2. Set Valid redirect URIs to `https://<ui host>/oauth2/callback`, Web origins to `https://<ui host>` and Valid post logout redirect URIs to `https://<ui host>/*`.
+3. In `.env`, set `OIDC_ISSUER_URL=https://<keycloak host>/realms/<realm>`, `OIDC_CLIENT_ID` to the client ID, `OIDC_CLIENT_SECRET` from the client's Credentials tab, and `OIDC_REDIRECT_URL` to the redirect URI above.
+4. To admit only one group, set `OIDC_ALLOWED_GROUPS` to the group name, without a leading `/`. oauth2-proxy then asks for a `groups` scope, which Keycloak does not have by default, and the login fails with `invalid_scope`. Create a client scope named `groups` (Client scopes, Create, Include in token scope on). Give it a Group Membership mapper with Token claim name `groups` and Full group path off. Add the scope to the client as Default.
+
+- Users imported from LDAP or FreeIPA arrive with `email_verified` false, and oauth2-proxy refuses them after a good Keycloak login. If the directory vouches for its addresses, add a hardcoded-attribute mapper to the user federation that sets `emailVerified` to `true`.
+- Test with a directory account in the allowed group. A local account made in the admin console has a verified email and skips the federation, so it can log in while directory users cannot.
+- Group membership is checked at login. Removing someone from the group takes effect when their session cookie expires, after 7 days by default (`OAUTH2_PROXY_COOKIE_EXPIRE` in your own override shortens it).
 
 ## Behaviour
 
