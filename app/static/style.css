@@ -245,7 +245,7 @@ tr.pickable.on > td { background:var(--acc-soft); }
 td.dcell { position:relative; } .dcell code { margin-right:22px; } /* room for the line between the digest and its copy icon */
 .dlink { display:none; position:absolute; top:0; bottom:0; left:calc(var(--s3) + 19ch + 8px); width:10px; font:12.5px var(--mono); } /* 19ch: the short digest */
 tr[data-link] .dlink { display:block; }
-.dlink::before { content:""; position:absolute; left:4px; top:0; bottom:0; width:2px; background:var(--acc); }
+.dlink::before { content:""; position:absolute; left:4px; top:-1px; bottom:-1px; width:2px; background:var(--acc); }
 tr[data-link=start] .dlink::before { top:50%; } tr[data-link=end] .dlink::before { bottom:50%; }
 .dlink::after { content:""; position:absolute; left:0; top:50%; width:6px; height:6px; margin-top:-5px; border:2px solid var(--acc); border-radius:50%; background:var(--panel); }
 tr:hover .dlink::after { background:var(--hover); } tr.pickable.on .dlink::after { background:var(--acc-soft); }
@@ -290,7 +290,8 @@ menu { display:flex; gap:var(--s2); justify-content:flex-end; padding:0; margin:
 
 /* PyPI source */
 #types[hidden] { display:none; }
-#types { display:flex; align-items:center; gap:var(--s2); padding:0 var(--s2) var(--s2); } #types label { font-size:12.5px; color:var(--mut); } #types select { flex:1; min-width:0; }
+#types { display:flex; margin:0 var(--s3) var(--s3); } #types .selwrap { flex:1; } /* lines up with #filter above it */
+#types select { flex:1; min-width:0; height:auto; padding:var(--s2) 28px var(--s2) var(--s3); font-size:14px; line-height:inherit; }
 .stats { display:flex; flex-wrap:wrap; gap:var(--s2); margin:calc(var(--s2) * -1) 0 var(--s4); }
 .stat { padding:2px var(--s2); border:1px solid var(--line); border-radius:var(--r1); color:var(--mut); font-size:12.5px; }
 .panetabs { flex-wrap:wrap; border-bottom:1px solid var(--line); margin-bottom:var(--s4); }

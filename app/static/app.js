@@ -2500,10 +2500,10 @@ function drawTypes() {
   const box = $("types"), helm = tree.helm.size > 0 || helmOnly();
   box.hidden = !cfg.pypi && !helm;
   if (box.hidden) return;
-  const opts = [["all", "All"], ...(cfg.pypi ? [["containers", "Containers"]] : []), ...(helm ? [["helm", "Helm charts"]] : []), ...(cfg.pypi ? [["python", "Python"]] : [])];
+  const opts = [["all", "All types"], ...(cfg.pypi ? [["containers", "Containers"]] : []), ...(helm ? [["helm", "Helm charts"]] : []), ...(cfg.pypi ? [["python", "Python"]] : [])];
   // a select, not buttons: four types do not fit a narrow sidebar
-  const sel = el("select", { id: "t-types", onchange: () => applyPrefs({ show: sel.value }) }, ...opts.map(([v, text]) => el("option", { value: v, textContent: text, selected: v === prefs.show })));
-  box.replaceChildren(el("label", { htmlFor: "t-types", textContent: "Show" }), sel);
+  const sel = el("select", { id: "t-types", "aria-label": "Show", onchange: () => applyPrefs({ show: sel.value }) }, ...opts.map(([v, text]) => el("option", { value: v, textContent: text, selected: v === prefs.show })));
+  box.replaceChildren(el("span", { className: "selwrap" }, sel, icon("chev")));
 }
 
 loadPrefs(); applyTheme();
