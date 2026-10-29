@@ -247,10 +247,12 @@ let hiddenMemo = new Map();
 const resetHidden = () => { hiddenMemo = new Map(); };
 // A repository of Helm charts, from the poller's list (/api/tagnames) or the kinds of its loaded tags.
 const isHelmRepo = (n) => tree.helm.has(n.path) || n.tagList.some((t) => tagKind(t) === "helm");
-const helmOnly = () => prefs.show === "helm";
-function isHidden(n) { // an empty repository, or a folder that holds only those. With the Helm filter, any repository without charts too.
-  if ((prefs.showEmpty && !helmOnly()) || n.kind !== "node") return false;
-  const hide = (!prefs.showEmpty && isEmptyRepo(n)) || (helmOnly() && !isHelmRepo(n));
+const helmOnly = () => prefs.show === "helm", noHelm = () => prefs.show === "containers";
+// ponytail: a repository that holds charts and images both counts as a chart repository, so Containers hides it
+const wrongKind = (n) => (helmOnly() && !isHelmRepo(n)) || (noHelm() && isHelmRepo(n));
+function isHidden(n) { // an empty repository, or a folder that holds only those. With the Helm or Containers filter, a repository of the other kind too.
+  if ((prefs.showEmpty && !helmOnly() && !noHelm()) || n.kind !== "node") return false;
+  const hide = (!prefs.showEmpty && isEmptyRepo(n)) || wrongKind(n);
   if (!hiddenMemo.has(n.id)) hiddenMemo.set(n.id, (!n.repo || hide) && [...n.kids.values()].every((k) => isHidden(k)));
   return hiddenMemo.get(n.id);
 }
@@ -387,7 +389,7 @@ let rows = []; // visible entries, in order
 function visible() {
   rows = [];
   const filtering = !!tree.filter, ok = filtering ? matchSet() : null;
-  if (tree.indexStale && (filtering || !prefs.showEmpty || helmOnly() || !tree.helmKey)) loadTagIndex();
+  if (tree.indexStale && (filtering || !prefs.showEmpty || helmOnly() || noHelm() || !tree.helmKey)) loadTagIndex();
   if (filtering && !ok.size && showsType("containers")) { rows.push({ info: "No repositories or tags match" + (tree.truncated ? " (tag search covers only the first 5000 tags)" : ""), depth: 0, anc: [], last: true }); pypiRows(); return; }
   const walk = (n, depth, anc, pos, count, last) => {
     rows.push({ n, depth, anc, pos, count, last });
@@ -1065,7 +1067,7 @@ function recentPane() {
   // Container changes come from the poller's history; PyPI uploads carry GitLab's upload time. One list, newest first.
   const items = [];
   if (showsType("containers")) {
-    for (const e of recent.events) if (!helmOnly() || tree.helm.has(repoOf(e.ref))) items.push({ t: e.t, el: () => el("tr", {},
+    for (const e of recent.events) if (tree.helm.has(repoOf(e.ref)) ? !noHelm() : !helmOnly()) items.push({ t: e.t, el: () => el("tr", {},
       el("td", { textContent: ago(e.t), title: new Date(e.t * 1000).toLocaleString() }),
       el("td", {}, el("span", { className: "ico" }, icon("whale", "whale")), el("span", { className: "badge " + e.type, textContent: e.type })),
       el("td", {}, e.type === "deleted" ? code(e.ref) : el("a", { href: "#/repo/" + e.ref, textContent: e.ref })),
@@ -1095,7 +1097,7 @@ function recentPane() {
 }
 function rootPane(n) {
   const repos = tree.names.filter((p) => !isHidden(tree.byPath.get(p))).length, hidden = tree.names.length - repos;
-  const hiddenNote = hidden ? ` (${hidden} ${helmOnly() ? "without Helm charts" : "empty"} hidden)` : "";
+  const hiddenNote = hidden ? ` (${hidden} ${helmOnly() ? "without Helm charts" : noHelm() ? (prefs.showEmpty ? "" : "empty or ") + "with Helm charts" : "empty"} hidden)` : "";
   showMain(crumbs(n), el("h2", { textContent: "Repositories" }), el("p", { className: "mut", textContent: `${repos} repositories${hiddenNote}, ${recent.tags} tags known to the poller.` }),
     ...(visibleKids(n).length ? childrenList(n) : [el("p", { className: "mut", textContent: "The catalog is empty." })]));
 }
@@ -2500,7 +2502,7 @@ function drawTypes() {
   const box = $("types"), helm = tree.helm.size > 0 || helmOnly();
   box.hidden = !cfg.pypi && !helm;
   if (box.hidden) return;
-  const opts = [["all", "All types"], ...(cfg.pypi ? [["containers", "Containers"]] : []), ...(helm ? [["helm", "Helm charts"]] : []), ...(cfg.pypi ? [["python", "Python"]] : [])];
+  const opts = [["all", "All types"], ["containers", "Containers"], ...(helm ? [["helm", "Helm charts"]] : []), ...(cfg.pypi ? [["python", "Python packages"]] : [])];
   // a select, not buttons: four types do not fit a narrow sidebar
   const sel = el("select", { id: "t-types", "aria-label": "Show", onchange: () => applyPrefs({ show: sel.value }) }, ...opts.map(([v, text]) => el("option", { value: v, textContent: text, selected: v === prefs.show })));
   box.replaceChildren(el("span", { className: "selwrap" }, sel, icon("chev")));

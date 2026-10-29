@@ -8,6 +8,7 @@ registry-lite-ui is a web UI for a plain `registry:2` that browses, copies, move
 
 - The sidebar type list lines up with the Filter box above it: same edges, height, padding and text size. The "Show" label beside it is gone (screen readers still announce it) and the first choice reads "All types".
 - The line that joins tags on one digest runs unbroken through the row borders.
+- The type list always offers Containers, which now leaves out the repositories that hold Helm charts. Before, it appeared only with PyPI configured and still listed the charts. Python is now "Python packages".
 
 ## Changes in 0.2.16
 
