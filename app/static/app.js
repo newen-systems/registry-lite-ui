@@ -690,12 +690,14 @@ function imageCommands({ host, path, tag, digest }) {
 }
 function helmCommands({ host, path, tag }) {
   const parent = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
-  const version = tag || "<VERSION>";
+  const version = tag || "<VERSION>", chart = path.slice(path.lastIndexOf("/") + 1).replace(/[^a-z0-9-]/g, "-").slice(0, 53).replace(/-+$/, ""); // what a release name allows
   return {
     heading: tag ? "Use this chart" : "Use this repository", tool: false,
     names: [["pull", "Pull"], ["push", "Push"], ["configure", "Configure"]],
     content: {
-      pull: () => [cmdNote("The tag is the chart version."), codeBlock("Pull the chart", [`helm pull oci://${host}/${path} --version ${version}`])],
+      pull: () => [cmdNote("The tag is the chart version."), codeBlock("Pull the chart", [`helm pull oci://${host}/${path} --version ${version}`]),
+        cmdNote(`Install it straight from the registry. The release is named ${chart}. Give it another name to install the chart twice.`),
+        codeBlock("Install the chart", [`helm install ${chart} oci://${host}/${path} --version ${version}`])],
       push: () => [cmdNote(`Package the chart, then push the archive. The chart's name is added to the path, so it lands in ${path}.`),
         codeBlock("Push the chart", [`helm push <chart>.tgz oci://${host}${parent ? "/" + parent : ""}`])],
       configure: () => [cmdNote("When the registry needs a login, sign in once."), codeBlock("Log in", [`helm registry login ${host}`]),

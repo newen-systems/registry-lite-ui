@@ -6,6 +6,7 @@ A web UI for a plain `registry:2` that browses, copies, moves and deletes images
 ![A repository's tags, newest first](docs/screenshots/tags.png)
 ![A tag with its image, pinned tag and pinned references](docs/screenshots/tag-detail.png)
 ![Only the repositories that hold Helm charts](docs/screenshots/helm-filter.png)
+![Pull and install commands for a Helm chart](docs/screenshots/helm-install.png)
 ![Delete several tags at once](docs/screenshots/bulk-delete.png)
 ![Copy to another repository](docs/screenshots/copy.png)
 ![A PyPI package's versions](docs/screenshots/pypi-package.png)
