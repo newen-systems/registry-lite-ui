@@ -9,7 +9,7 @@ let checked = null; // when the server last finished a walk of the registry
 // Preferences only, no data or secrets. Storage may be blocked, so every access is guarded.
 // expanded and selected are the tree state (node ids and the location hash), sidebar is its width in px.
 const DEFAULTS = { theme: "system", repoSort: "name", tagSort: "recent", packageSort: "name", live: true, refresh: 0, interval: 30, pageSize: 50, runtime: "podman", showEmpty: false, tool: "pip", os: "linux", show: "all", sidebar: 280, selected: "/recent", expanded: [] };
-const CHOICES = { theme: ["system", "light", "dark"], repoSort: ["name", "recent"], tagSort: ["recent", "version"], packageSort: ["name", "recent"], runtime: ["podman", "docker"], tool: ["pip", "uv"], os: ["linux", "windows"], show: ["all", "containers", "python"], interval: [10, 30, 60, 300], refresh: [0, 10, 15, 30, 60], pageSize: [25, 50, 100, 200] };
+const CHOICES = { theme: ["system", "light", "dark"], repoSort: ["name", "recent"], tagSort: ["recent", "version"], packageSort: ["name", "recent"], runtime: ["podman", "docker"], tool: ["pip", "uv"], os: ["linux", "windows"], show: ["all", "containers", "helm", "python"], interval: [10, 30, 60, 300], refresh: [0, 10, 15, 30, 60], pageSize: [25, 50, 100, 200] };
 const MAX_EXPANDED = 500;
 const SIDEBAR = [180, 640];
 let prefs = { ...DEFAULTS };
@@ -167,7 +167,7 @@ function paged(rows, headers) {
 // Only what is expanded is rendered, and tags and platforms are fetched when their parent first opens.
 const tree = {
   root: null, proot: null, byKey: new Map(), byId: new Map(), byPath: new Map(), sel: null, focus: null,
-  filter: "", matches: null, closed: new Set(), flashes: new Map(), tagIndex: new Map(), empty: new Set(), emptyKey: "", tm: new Map(), pathHit: new Set(), indexStale: true, truncated: false,
+  filter: "", matches: null, closed: new Set(), flashes: new Map(), tagIndex: new Map(), empty: new Set(), emptyKey: "", helm: new Set(), helmKey: "", tm: new Map(), pathHit: new Set(), indexStale: true, truncated: false,
 };
 const expanded = new Set();
 const manifests = new Map(); // "repo@digest" -> manifest JSON; cleared for a repo when it changes
@@ -245,9 +245,13 @@ function isEmptyRepo(n) {
 }
 let hiddenMemo = new Map();
 const resetHidden = () => { hiddenMemo = new Map(); };
-function isHidden(n) { // an empty repository, or a folder that holds only those
-  if (prefs.showEmpty || n.kind !== "node") return false;
-  if (!hiddenMemo.has(n.id)) hiddenMemo.set(n.id, (!n.repo || isEmptyRepo(n)) && [...n.kids.values()].every((k) => isHidden(k)));
+// A repository of Helm charts, from the poller's list (/api/tagnames) or the kinds of its loaded tags.
+const isHelmRepo = (n) => tree.helm.has(n.path) || n.tagList.some((t) => tagKind(t) === "helm");
+const helmOnly = () => prefs.show === "helm";
+function isHidden(n) { // an empty repository, or a folder that holds only those. With the Helm filter, any repository without charts too.
+  if ((prefs.showEmpty && !helmOnly()) || n.kind !== "node") return false;
+  const hide = (!prefs.showEmpty && isEmptyRepo(n)) || (helmOnly() && !isHelmRepo(n));
+  if (!hiddenMemo.has(n.id)) hiddenMemo.set(n.id, (!n.repo || hide) && [...n.kids.values()].every((k) => isHidden(k)));
   return hiddenMemo.get(n.id);
 }
 const visibleKids = (n) => folderKids(n).filter((k) => !isHidden(k));
@@ -291,9 +295,13 @@ function loadTagIndex() { // one small request, made when the filter is first us
     tree.tagIndex = new Map(Object.entries(o.repos));
     tree.truncated = o.truncated;
     const empty = o.empty || [], key = empty.join("\n");
-    const changed = key !== tree.emptyKey;
+    const helm = o.helm || [], helmKey = helm.join("\n");
+    const changed = key !== tree.emptyKey || helmKey !== tree.helmKey;
     tree.empty = new Set(empty);
     tree.emptyKey = key;
+    tree.helm = new Set(helm);
+    tree.helmKey = helmKey;
+    drawTypes();
     tree.indexStale = false;
     tree.matches = null;
     if (changed) { resetHidden(); void renderPane(); } // what is hidden changed, so the lists change too
@@ -379,7 +387,7 @@ let rows = []; // visible entries, in order
 function visible() {
   rows = [];
   const filtering = !!tree.filter, ok = filtering ? matchSet() : null;
-  if (tree.indexStale && (filtering || !prefs.showEmpty)) loadTagIndex();
+  if (tree.indexStale && (filtering || !prefs.showEmpty || helmOnly() || !tree.helmKey)) loadTagIndex();
   if (filtering && !ok.size && showsType("containers")) { rows.push({ info: "No repositories or tags match" + (tree.truncated ? " (tag search covers only the first 5000 tags)" : ""), depth: 0, anc: [], last: true }); pypiRows(); return; }
   const walk = (n, depth, anc, pos, count, last) => {
     rows.push({ n, depth, anc, pos, count, last });
@@ -1044,7 +1052,7 @@ function recentPane() {
   // Container changes come from the poller's history; PyPI uploads carry GitLab's upload time. One list, newest first.
   const items = [];
   if (showsType("containers")) {
-    for (const e of recent.events) items.push({ t: e.t, el: () => el("tr", {},
+    for (const e of recent.events) if (!helmOnly() || tree.helm.has(repoOf(e.ref))) items.push({ t: e.t, el: () => el("tr", {},
       el("td", { textContent: ago(e.t), title: new Date(e.t * 1000).toLocaleString() }),
       el("td", {}, el("span", { className: "ico" }, icon("whale", "whale")), el("span", { className: "badge " + e.type, textContent: e.type })),
       el("td", {}, e.type === "deleted" ? code(e.ref) : el("a", { href: "#/repo/" + e.ref, textContent: e.ref })),
@@ -1074,7 +1082,7 @@ function recentPane() {
 }
 function rootPane(n) {
   const repos = tree.names.filter((p) => !isHidden(tree.byPath.get(p))).length, hidden = tree.names.length - repos;
-  const hiddenNote = hidden ? " (" + hidden + " empty hidden)" : "";
+  const hiddenNote = hidden ? ` (${hidden} ${helmOnly() ? "without Helm charts" : "empty"} hidden)` : "";
   showMain(crumbs(n), el("h2", { textContent: "Repositories" }), el("p", { className: "mut", textContent: `${repos} repositories${hiddenNote}, ${recent.tags} tags known to the poller.` }),
     ...(visibleKids(n).length ? childrenList(n) : [el("p", { className: "mut", textContent: "The catalog is empty." })]));
 }
@@ -1980,7 +1988,8 @@ const when = (iso, never = "") => (iso ? el("span", { title: new Date(iso).toLoc
 const uniq = (xs) => [...new Set(xs.filter(Boolean))];
 const plural = (n, one, many = one + "s") => `${n} ${n === 1 ? one : many}`;
 const shortProject = (p) => p.split("/").pop();
-const showsType = (t) => !cfg.pypi || prefs.show === "all" || prefs.show === t; // the sidebar's type filter; without PyPI there is nothing to filter
+// The sidebar's type filter. Helm charts are in the registry, so that filter shows it too.
+const showsType = (t) => prefs.show === "all" || prefs.show === t || (t === "containers" && (prefs.show === "helm" || !cfg.pypi)) || (t === "python" && !cfg.pypi);
 
 // Versions in PEP 440 order: 1.0.dev1 < 1.0a1 < 1.0b2 < 1.0rc1 < 1.0 < 1.0.post1, numeric parts compared as numbers.
 const PEP440 = /^v?(?:(\d+)!)?(\d+(?:\.\d+)*)(?:[-_.]?(a|alpha|b|beta|c|rc|pre|preview)[-_.]?(\d*))?(?:-(\d+)|[-_.]?(?:post|rev|r)[-_.]?(\d*))?(?:[-_.]?dev[-_.]?(\d*))?(?:\+[a-z0-9]+(?:[-_.][a-z0-9]+)*)?$/i;
@@ -2462,12 +2471,13 @@ async function pypiSync() {
   return pypiSyncing;
 }
 
-// The sidebar's type filter: all, containers or python. Shown only when the PyPI source is on.
+// The sidebar's type filter: all, containers, Helm charts or python. Shown when there is more than one type to pick from.
 function drawTypes() {
-  const box = $("types");
-  box.hidden = !cfg.pypi;
-  if (!cfg.pypi) return;
-  box.replaceChildren(segmented("t-types", [["all", "All"], ["containers", "Containers"], ["python", "Python"]], "show", (c) => applyPrefs(c)));
+  const box = $("types"), helm = tree.helm.size > 0 || helmOnly();
+  box.hidden = !cfg.pypi && !helm;
+  if (box.hidden) return;
+  const opts = [["all", "All"], ...(cfg.pypi ? [["containers", "Containers"]] : []), ...(helm ? [["helm", "Helm"]] : []), ...(cfg.pypi ? [["python", "Python"]] : [])];
+  box.replaceChildren(segmented("t-types", opts, "show", (c) => applyPrefs(c)));
 }
 
 loadPrefs(); applyTheme();
