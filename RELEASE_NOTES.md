@@ -4,6 +4,11 @@ registry-lite-ui is a web UI for a plain `registry:2` that browses, copies, move
 
 `podman-compose up -d` with `compose.yml` (registry and UI), or `podman-compose -f compose.ui.yml up -d` with `REGISTRY_URL` set for a registry that already runs. `docker compose` works the same way. Pin `UI_IMAGE` to a version or a digest in your `.env`.
 
+## Changes in 0.2.11
+
+- Recent for the registry survives a restart of the container however it is run. The image now sets `UI_STATE_DIR=/state`, so a plain `docker run` or a deployment without the variable writes `state.json` too. The compose files already did this with the `ui-state` volume. `UI_STATE_DIR=` (empty) keeps history in memory only, as before.
+- A state directory the UI cannot write (a read-only root without a volume at `/state`) gives one warning at start and keeps history in memory, instead of a warning at every save.
+
 ## Changes in 0.2.10
 
 - A Helm chart's Pull tab also has a copyable install command: `helm install <chart> oci://<host>/<repo> --version <version>`. The release takes the chart's name, with any character a release name does not allow turned into `-` and cut to 53 characters.

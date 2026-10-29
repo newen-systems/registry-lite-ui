@@ -726,6 +726,14 @@ class State2(unittest.TestCase):
             s = P.State(path)
             self.assertEqual((s.tags, len(s.events), s.baselined), ({}, 0, False), text)
 
+    def test_state_dir_is_used_only_when_writable(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d)
+        self.assertEqual(S.Config({"UI_STATE_DIR": d}).state.path, os.path.join(d, "state.json"))
+        with self.assertLogs("ui", "WARNING"):
+            self.assertIsNone(S.Config({"UI_STATE_DIR": os.path.join(d, "missing")}).state.path)
+        self.assertIsNone(S.Config({"UI_STATE_DIR": ""}).state.path)
+
     def test_error_log_is_one_line(self):
         th = P.Throttle()
         with self.assertLogs("poller", "WARNING") as cm:

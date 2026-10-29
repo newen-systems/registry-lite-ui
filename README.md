@@ -76,7 +76,7 @@ A release is `X.Y.Z`, `X.Y`, `X` and `latest`; main is `edge`; every build has i
 ## Ports and volumes
 
 - UI on 8080, the registry on 5000. The UI is never on the push or pull path: stop it and clients carry on.
-- `ui-state` at `/state` holds `state.json`, the Recent history. Without it, history resets on restart.
+- `ui-state` at `/state` holds `state.json`, the Recent history. The image writes there by default (`UI_STATE_DIR=/state`), so history survives a restart of the container. Mount a volume at `/state` to keep it when the container is removed or the root filesystem is read-only, which the compose files do. `UI_STATE_DIR=` (empty) keeps history in memory only.
 - `registry-data` holds the images. `registry-init` gives it to uid 65534 once, as the registry runs as 65534 too.
 
 ## Overrides
