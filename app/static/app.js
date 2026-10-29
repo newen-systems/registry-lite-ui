@@ -8,7 +8,7 @@ let checked = null; // when the server last finished a walk of the registry
 
 // Preferences only, no data or secrets. Storage may be blocked, so every access is guarded.
 // expanded and selected are the tree state (node ids and the location hash), sidebar is its width in px.
-const DEFAULTS = { theme: "system", repoSort: "name", tagSort: "recent", packageSort: "name", live: true, refresh: 0, interval: 30, pageSize: 50, runtime: "podman", showEmpty: false, tool: "pip", os: "linux", show: "all", sidebar: 280, selected: "/recent", expanded: [] };
+const DEFAULTS = { theme: "system", repoSort: "name", tagSort: "recent", packageSort: "name", live: true, refresh: 0, interval: 30, pageSize: 50, runtime: "podman", showEmpty: false, notify: false, tool: "pip", os: "linux", show: "all", sidebar: 280, selected: "/recent", expanded: [] };
 const CHOICES = { theme: ["system", "light", "dark"], repoSort: ["name", "recent"], tagSort: ["recent", "version"], packageSort: ["name", "recent"], runtime: ["podman", "docker"], tool: ["pip", "uv"], os: ["linux", "windows"], show: ["all", "containers", "helm", "python"], interval: [10, 30, 60, 300], refresh: [0, 10, 15, 30, 60], pageSize: [25, 50, 100, 200] };
 const MAX_EXPANDED = 500;
 const SIDEBAR = [180, 640];
@@ -1347,6 +1347,15 @@ function leaveGoneNode() { // the selected node is gone: fall back to what holds
   const n = tree.byPath.get(pathFromId(tree.sel));
   location.hash = n ? hashOf(n) : "#/";
 }
+// A desktop notification for the pushes in one sync, while the page is not the window in focus: push, switch away, hear when it lands.
+const canNotify = () => "Notification" in window && window.isSecureContext; // the browser offers it on HTTPS and localhost only
+function notifyPushes(evs) {
+  const refs = evs.filter((e) => e.type !== "deleted").map((e) => e.ref);
+  if (!refs.length || !prefs.notify || document.hasFocus() || !canNotify() || Notification.permission !== "granted") return;
+  const more = refs.length > 5 ? ` and ${refs.length - 5} more` : "";
+  const note = new Notification(refs.length === 1 ? "Pushed " + refs[0] : `${refs.length} pushes`, { body: refs.slice(0, 5).join("\n") + more, tag: "registry-push", icon: "/favicon.svg" });
+  note.onclick = () => { window.focus(); location.hash = refs.length === 1 ? "#/repo/" + refs[0] : "#/recent"; note.close(); };
+}
 async function doSync() {
   const [rc, names] = await Promise.all([api("/api/recent"), api("/api/repos")]);
   const first = lastSeq === null;
@@ -1357,6 +1366,7 @@ async function doSync() {
   const grew = applyCatalog(names, !first);
   const touched = new Set(evs.map((e) => repoOf(e.ref)));
   if (evs.length || gap) { tree.indexStale = true; tree.matches = null; }
+  notifyPushes(evs);
   await refreshTouched(touched, gap);
   leaveGoneNode();
   banner(notice());
@@ -1885,7 +1895,7 @@ function helpPanel() {
 }
 
 // ---- Settings: one panel, changes apply as you make them ----------------------------------------------------------------
-const SETTING_KEYS = ["theme", "runtime", "tool", "os", "show", "repoSort", "tagSort", "packageSort", "live", "refresh", "interval", "pageSize", "showEmpty"];
+const SETTING_KEYS = ["theme", "runtime", "tool", "os", "show", "repoSort", "tagSort", "packageSort", "live", "refresh", "interval", "pageSize", "showEmpty", "notify"];
 const SORT_KEYS = ["repoSort", "tagSort", "packageSort"];
 function segmented(labelId, options, key, apply) { // options: [value, text, iconName?]. Arrow keys move and select, like radio buttons.
   const box = el("div", { className: "seg", role: "radiogroup", "aria-labelledby": labelId });
@@ -1954,6 +1964,12 @@ function settings() {
     return el("div", { className: "srow" }, control.getAttribute?.("role") === "switch" ? switchLabel(control, ...text) : el("div", {}, ...text), el("div", { className: "sctl" }, control));
   };
   const section = (title, ...rows) => el("section", {}, el("h3", { className: "ssec", textContent: title }), ...rows);
+  // Permission is asked on the click that turns it on, as browsers require. Refused, the switch stays off.
+  const notifyCtl = switchEl("s-notify", "notify", async (c) => {
+    if (c.notify && Notification.permission !== "granted" && await Notification.requestPermission() !== "granted") { banner("This browser blocks notifications for this page. Allow them in its site settings.", true); return; }
+    apply(c);
+  });
+  notifyCtl.disabled = !canNotify();
   const pollCtl = selectEl("s-poll", "interval", CHOICES.interval, (v) => v + " s", apply);
   const pollRow = row("s-poll", "Poll while disconnected", "Only while the live stream is down: seconds between checks of this page.", pollCtl);
   // Server default is UI_POLL_INTERVAL. A choice can only make the walk faster, and never faster than UI_POLL_MIN.
@@ -1975,7 +1991,8 @@ function settings() {
         row("s-rows", "Rows per page", "Rows a list shows before Show more.", selectEl("s-rows", "pageSize", CHOICES.pageSize, String, apply)),
         row("s-empty", "Show empty repositories", "Repositories with no tags. The registry cannot delete them.", switchEl("s-empty", "showEmpty", apply))),
       section("Lifecycle", lifecycleRow()),
-      section("Live updates", row("s-live", "Auto-refresh", "Update the tree and lists as the registry changes.", switchEl("s-live", "live", apply)), refreshRow, pollRow)),
+      section("Live updates", row("s-live", "Auto-refresh", "Update the tree and lists as the registry changes.", switchEl("s-live", "live", apply)), refreshRow, pollRow,
+        row("s-notify", "Notify on push", canNotify() ? "A desktop notification for each push while this window is not in focus." : "Needs the page on HTTPS or localhost.", notifyCtl))),
     el("div", { className: "sfoot" },
       el("button", { type: "button", className: "linkbtn", textContent: "Reset to defaults", onclick: () => apply(Object.fromEntries(SETTING_KEYS.map((k) => [k, DEFAULTS[k]]))) }),
       el("button", { type: "button", className: "primary", textContent: "Done", onclick: () => dlg.close() })));
