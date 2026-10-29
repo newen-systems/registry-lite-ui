@@ -20,8 +20,11 @@
 <div id="banner" hidden></div>
 <div id="app">
   <aside id="side">
-    <input id="filter" type="search" placeholder="Filter" aria-label="Filter the tree" autocomplete="off" spellcheck="false">
-    <div id="types" hidden></div>
+    <div id="findbar">
+      <input id="filter" type="search" placeholder="Filter" aria-label="Filter the tree" autocomplete="off" spellcheck="false">
+      <button id="typesbtn" class="iconbtn" type="button" popovertarget="types" hidden></button>
+    </div>
+    <div id="types" popover></div>
     <div id="tree" role="tree" aria-label="Repositories"></div>
   </aside>
   <button id="grip" type="button" aria-label="Resize the tree"></button>
