@@ -4,6 +4,13 @@ registry-lite-ui is a web UI for a plain `registry:2` that browses, copies, move
 
 `podman-compose up -d` with `compose.yml` (registry and UI), or `podman-compose -f compose.ui.yml up -d` with `REGISTRY_URL` set for a registry that already runs. `docker compose` works the same way. Pin `UI_IMAGE` to a version or a digest in your `.env`.
 
+## Changes in 0.2.17
+
+- The type filter moves from its own row under Filter to a funnel button beside it, which opens the choices (All types, Containers, Helm charts, Python packages) with the same icons as the tree. The funnel turns blue while it filters. Escape or a click outside closes it.
+- Log in and Log out are buttons with the same size and style as Help and Settings.
+- The line that joins tags on one digest runs unbroken through the row borders.
+- The type filter always offers Containers, which now leaves out the repositories that hold Helm charts. Before, it appeared only with PyPI configured and still listed the charts. Python is now "Python packages".
+
 ## Changes in 0.2.16
 
 - The countdown pie empties clockwise, like a clock, instead of anticlockwise.

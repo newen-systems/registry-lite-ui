@@ -106,7 +106,7 @@ Add each with `-f`, after `compose.yml` (or after `compose.ui.yml` for a registr
 ## Behaviour
 
 - **Recent** is when the UI saw a change: the registry API has no push times, and pushes before the UI started are not in it. PyPI upload times come from GitLab.
-- **Helm filter.** Once the poller has read a Helm chart, the sidebar's Show list offers Helm charts: only the repositories that hold charts, in the tree, the lists and Recent.
+- **Helm filter.** Once the poller has read a Helm chart, the funnel beside the sidebar's Filter offers Helm charts (only the repositories that hold charts, in the tree, the lists and Recent) and Containers (all the others). A repository with both charts and images counts as a chart repository.
 - **Copy** mounts blobs and writes the original manifest bytes, so the digest does not change. **Move** is copy, check, then delete.
 - **Delete** is by digest, so every tag on that digest goes, and the dialog lists them. A digest that a tagged index uses as a platform is refused (409).
 - **Delete selected** deletes up to 100 tags of one repository at once: tick them in the tag list (the header box ticks every row shown), then confirm. Each digest goes through the single delete with its checks, an index before its own children. The dialog names the tags that go only because they share a digest with a ticked one, and the result lists each tag as deleted, skipped (already gone) or failed with the reason. Shift-click selects every row shown between the last one clicked and this one, and a click on a row outside its links ticks it too. Read-only mode and a missing login hide the checkboxes, and the API refuses the call as it does a single delete.
