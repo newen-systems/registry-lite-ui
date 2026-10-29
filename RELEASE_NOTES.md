@@ -4,6 +4,10 @@ registry-lite-ui is a web UI for a plain `registry:2` that browses, copies, move
 
 `podman-compose up -d` with `compose.yml` (registry and UI), or `podman-compose -f compose.ui.yml up -d` with `REGISTRY_URL` set for a registry that already runs. `docker compose` works the same way. Pin `UI_IMAGE` to a version or a digest in your `.env`.
 
+## Changes in 0.2.15
+
+- Settings, Live updates, Notify on push: a desktop notification for the pushes the page sees while its window is not in focus, so you can push, switch away and hear when the image lands. One push names the tag and opens it on click. Several in one refresh are one notification that opens Recent. The browser asks for permission when the switch is turned on, and offers notifications on HTTPS and localhost only. Deletes do not notify.
+
 ## Changes in 0.2.14
 
 - The countdown to the next refresh is a small pie beside "live, checked" instead of a line under the header. The accent slice shrinks to nothing as the next walk of the registry comes.
