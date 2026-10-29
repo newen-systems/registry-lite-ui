@@ -109,7 +109,13 @@ WantedBy=multi-user.target
 
 ## Tags
 
-A release is `X.Y.Z`, `X.Y`, `X` and `latest`; main is `edge`; every build has its commit sha. Pin `UI_IMAGE` to `X.Y.Z` or a digest, and Renovate finds new releases. A release is a pushed tag that matches `VERSION`: `git tag -a v0.2.1 -m "registry-lite-ui 0.2.1" && git push origin v0.2.1`.
+A release is `X.Y.Z`, `X.Y`, `X` and `latest`; main is `edge`; every build has its commit sha. Pin `UI_IMAGE` to `X.Y.Z` or a digest, and Renovate finds new releases. A release is a pushed tag that matches `VERSION`. Every change that bumps `VERSION` is released:
+
+1. Merge the release pull request and wait for the main build to pass.
+2. Tag the merge commit with an annotated tag and push it: `git tag -a vX.Y.Z -m "registry-lite-ui X.Y.Z" <merge commit> && git push origin vX.Y.Z`.
+3. Wait for the tag build, then check that the GitHub Release `X.Y.Z` exists: `gh release view vX.Y.Z`.
+
+A `VERSION` bump without a tag is never published.
 
 ## Ports and volumes
 
