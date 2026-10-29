@@ -44,7 +44,7 @@ header #live { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space
 header #menu { display:none; }
 header #who { margin-left:auto; color:var(--mut); font-weight:400; font-size:12.5px; } header #who a.btn { padding:3px 10px; border:1px solid var(--acc); border-radius:6px; font-weight:600; }
 /* the time left to the next refresh as a pie: the accent part shrinks back to the top and the refresh comes when it is gone */
-#tick { flex:none; width:14px; height:14px; margin-left:calc(var(--s2) - var(--s4)); border-radius:50%; background:conic-gradient(var(--acc) calc(var(--p, 0) * 1turn), var(--line2) 0); }
+#tick { flex:none; width:14px; height:14px; margin-left:calc(var(--s2) - var(--s4)); border-radius:50%; background:conic-gradient(var(--line2) calc((1 - var(--p, 0)) * 1turn), var(--acc) 0); }
 #tick[hidden] { display:none; }
 #banner { margin:0 var(--gut) var(--s3); padding:var(--s2) var(--s3); background:var(--warn); border:1px solid var(--warn-line); border-radius:var(--r1); }
 #banner.err { color:var(--bad); }
