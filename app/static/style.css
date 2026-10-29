@@ -217,7 +217,9 @@ dialog.settings.transfer { width:560px; }
 .rowcopy .iconbtn { height:22px; width:22px; }
 tr:hover .rowcopy, tr:focus-within .rowcopy, .rowcopy:focus-within { opacity:1; }
 @media (hover:none), (max-width: 700px) { .rowcopy { opacity:1; } }
-.rowcopy .done { font-size:12px; color:var(--ok); white-space:nowrap; }
+/* "Copied" floats above the icon, so the columns to its right do not move */
+.rowcopy .done { position:absolute; left:50%; bottom:100%; transform:translateX(-50%); z-index:1; font-size:12px; color:var(--ok); white-space:nowrap; background:var(--panel); border:1px solid var(--line); border-radius:var(--r1); padding:0 var(--s1); pointer-events:none; }
+.rowcopy .done:empty { display:none; }
 .steps { margin:var(--s3) 0; padding-left:var(--s5); } .steps li { margin:var(--s2) 0; } .steps li > .code { margin-top:var(--s2); }
 .gcsteps .seg { margin:var(--s2) 0 0; }
 .keys th { width:130px; font-weight:400; white-space:nowrap; } .keys tr:hover > td, .keys tr:hover > th { background:none; }
