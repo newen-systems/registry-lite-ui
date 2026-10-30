@@ -4,6 +4,10 @@ registry-lite-ui is a web UI for a plain `registry:2` that browses, copies, move
 
 `podman-compose up -d` with `compose.yml` (registry and UI), or `podman-compose -f compose.ui.yml up -d` with `REGISTRY_URL` set for a registry that already runs. `docker compose` works the same way. Pin `UI_IMAGE` to a version or a digest in your `.env`.
 
+## Changes in 0.2.21
+
+- Copy to and Move to put the destination repository and tag on one row, joined by a colon as in the result, with their status on one line below. The folder picker moved under them.
+
 ## Changes in 0.2.20
 
 - README: Usage explains that features are separate compose files added with `-f`, shows the common mixes and `config` to see the merged result, and gives a systemd unit for podman-compose. A new Keycloak section covers the client, the `groups` client scope that `OIDC_ALLOWED_GROUPS` needs, and federated users.
