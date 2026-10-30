@@ -1441,7 +1441,7 @@ function startPoll() { // the fallback while the stream is down, every `interval
 document.addEventListener("visibilitychange", () => { if (prefs.refresh && prefs.live) startLive(); }); // ask for the interval only while visible
 document.addEventListener("visibilitychange", () => { if (!document.hidden && stale) { stale = false; void sync(); void pypiSync(); } });
 
-// ---- Copy to / Move to: source card, destination path with a folder picker, promote chips, tag and a preview -----------------
+// ---- Copy to / Move to: source card, destination repository and tag, a folder picker, promote chips and a preview -----------------
 // The same name rules as the server (registry.py), so a bad name is caught while typing. The server stays the authority.
 const REPO_PART = /^[a-z0-9]+(?:(?:\.|_|__|-+)[a-z0-9]+)*$/;
 const TAG_NAME = /^\w[\w.-]{0,127}$/;
@@ -1775,8 +1775,8 @@ function transfer(o) {
     let result = null;
     const pathIn = el("input", { type: "text", className: "xin", id: "x-path", value: st.path, autocomplete: "off", spellcheck: false, "aria-describedby": "x-pathstat" });
     const tagIn = el("input", { type: "text", className: "xin", id: "x-tag", value: st.tag, autocomplete: "off", spellcheck: false, "aria-describedby": "x-tagstat" });
-    const pathStat = el("div", { className: "xstat", id: "x-pathstat", "aria-live": "polite" });
-    const tagStat = el("div", { className: "xstat", id: "x-tagstat", "aria-live": "polite" });
+    const pathStat = el("span", { id: "x-pathstat", "aria-live": "polite" });
+    const tagStat = el("span", { id: "x-tagstat", "aria-live": "polite" });
     const preview = el("div", { className: "preview" });
     const go = el("button", { type: "button", className: "primary", textContent: verb });
     const setPath = (path) => { st.path = path; pathIn.value = path; update(); };
@@ -1812,8 +1812,10 @@ function transfer(o) {
         sourceCard(o, false),
         ...(o.block ? [el("p", { className: "dlg-warn", role: "alert", textContent: o.block })] : []),
         el("p", { className: "mut", textContent: lead }),
-        el("label", { className: "xlabel", htmlFor: "x-path", textContent: "Destination repository" }), pathIn, pathStat, picker.box, chips.wrap,
-        el("label", { className: "xlabel", htmlFor: "x-tag", textContent: "Destination tag" }), tagIn, tagStat,
+        el("div", { className: "xpair" }, // repository and tag side by side, as they read in the result
+          el("label", { className: "xlabel", htmlFor: "x-path", textContent: "Destination repository" }), el("span"), el("label", { className: "xlabel", htmlFor: "x-tag", textContent: "Tag" }),
+          pathIn, el("span", { className: "xcolon", textContent: ":" }), tagIn),
+        el("div", { className: "xstat" }, pathStat, tagStat), picker.box, chips.wrap,
         preview),
       el("div", { className: "sfoot" }, el("button", { type: "button", textContent: "Cancel", onclick: () => dlg.close() }), go));
     dlg.addEventListener("click", (e) => { if (e.target === dlg) dlg.close(); });
