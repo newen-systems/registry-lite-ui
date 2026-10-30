@@ -4,6 +4,12 @@ registry-lite-ui is a web UI for a plain `registry:2` that browses, copies, move
 
 `podman-compose up -d` with `compose.yml` (registry and UI), or `podman-compose -f compose.ui.yml up -d` with `REGISTRY_URL` set for a registry that already runs. `docker compose` works the same way. Pin `UI_IMAGE` to a version or a digest in your `.env`.
 
+## Changes in 0.2.22
+
+- A repository has its own stacked icon in the tree, the destination picker, folder lists and its page. The folder icon now means a path that is only a parent, such as `team` in `team/app`.
+- Picking a folder in Copy to and Move to puts the source name inside it (`web` gives `web/alpine`). Typing a folder's bare name still works, with a warning that it makes a repository of that name beside what the folder holds.
+- README: `library/` is an ordinary name on a private registry. Only Docker Hub maps `alpine` to `library/alpine`.
+
 ## Changes in 0.2.21
 
 - Copy to and Move to put the destination repository and tag on one row, joined by a colon as in the result, with their status on one line below. The folder picker moved under them.

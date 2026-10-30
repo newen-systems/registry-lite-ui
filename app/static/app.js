@@ -84,6 +84,7 @@ const ICONS = {
   arrow: [["s", "M8 12.5v-9M4.5 7L8 3.5 11.5 7"]],
   chart: [["s", "M8 1.8a6.2 6.2 0 1 0 0 12.4A6.2 6.2 0 0 0 8 1.8zM8 6.4a1.6 1.6 0 1 0 0 3.2 1.6 1.6 0 0 0 0-3.2zM8 1.8v4.6M8 9.6v4.6M2.6 4.9l4 2.3M9.4 8.8l4 2.3M2.6 11.1l4-2.3M9.4 7.2l4-2.3"]],
   box: [["s", "M3 3h10v10H3z"]],
+  repo: [["", "M8 1.8l6 3-6 3-6-3z"], ["s", "M2 8l6 3 6-3M2 11l6 3 6-3"]], // a repository, beside the folder of a path that is only a parent
   artifact: [["s", "M8 1.8l5.5 3v6.4L8 14.2l-5.5-3V4.8zM2.5 4.8L8 7.8l5.5-3M8 7.8v6.4"]],
   clock: [["s", "M8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2zM8 4.8V8l2.2 1.4"]],
   pkg: [["s", "M8 1.8l5.5 3v6.4L8 14.2l-5.5-3V4.8zM2.5 4.8L8 7.8l5.5-3M8 7.8v6.4"]],
@@ -424,7 +425,7 @@ function iconFor(n, open) {
   if (n.kind === "ver") return icon("tag");
   if (n.kind === "tag") return kindIcon(tagKind(n));
   if (n.kind === "plat") return icon("chip");
-  return icon(open ? "folderOpen" : "folder");
+  return icon(n.repo ? "repo" : open ? "folderOpen" : "folder");
 }
 function rowTitle(n) {
   if (n.kind === "root") return cfg.registry || "";
@@ -1062,7 +1063,7 @@ function childrenList(n) {
       { key: "changed", label: "Last change", val: (k) => changed.get(k) || null, cmp: numCmp },
     ],
     match: (k, text) => k.name.toLowerCase().includes(text), placeholder: "Filter",
-    row: (k) => el("tr", {}, el("td", {}, el("span", { className: "ico" }, icon("folder"), link(k, k.name))), el("td", { className: "mut", textContent: kindOf(k) }), el("td", { className: "mut", textContent: ago(changed.get(k)) })),
+    row: (k) => el("tr", {}, el("td", {}, el("span", { className: "ico" }, icon(k.repo ? "repo" : "folder"), link(k, k.name))), el("td", { className: "mut", textContent: kindOf(k) }), el("td", { className: "mut", textContent: ago(changed.get(k)) })),
   });
 }
 
@@ -1135,7 +1136,7 @@ function emptyRepoNote(n) {
 function repoPane(n) {
   const tags = n.tagList.length ? tagsList(n) : n.err ? [] : emptyRepoNote(n); // an error (no tags yet, during a push) is not an empty repository to remove
   const kids = visibleKids(n).length ? [el("h3", { textContent: "Folders" }), ...childrenList(n)] : [];
-  showMain(crumbs(n), el("h2", {}, el("span", { className: "ico" }, icon("folderOpen")), n.path), el("p", { className: "reporef" }, copyValue(`${cfg.registryHost || "<REGISTRY>"}/${n.path}`, "Copy repository reference")),
+  showMain(crumbs(n), el("h2", {}, el("span", { className: "ico" }, icon("repo")), n.path), el("p", { className: "reporef" }, copyValue(`${cfg.registryHost || "<REGISTRY>"}/${n.path}`, "Copy repository reference")),
     ...(n.err ? [el("p", { className: "mut", textContent: n.err })] : []), ...tags, ...kids, commandsEl(n.path, "", "", repoKind(n)));
 }
 function folderPane(n) {
@@ -1641,7 +1642,7 @@ function createPicker(st, onChoose) {
     const row = el("div", {
       className: "row", role: "treeitem", id: "px-" + n.id, tabIndex: n.id === focusId ? 0 : -1,
       "aria-level": r.depth + 1, "aria-selected": String(n.path === st.path),
-    }, ...guidesFor(r), el("span", { className: "chev" }, n.kids.size ? icon("chev") : null), icon(isOpen ? "folderOpen" : "folder"), el("span", { className: "lbl", textContent: n.name }));
+    }, ...guidesFor(r), el("span", { className: "chev" }, n.kids.size ? icon("chev") : null), icon(n.repo ? "repo" : isOpen ? "folderOpen" : "folder"), el("span", { className: "lbl", textContent: n.name }));
     row.dataset.id = n.id;
     if (n.kids.size) row.setAttribute("aria-expanded", String(isOpen));
     return row;
@@ -1753,8 +1754,10 @@ function tagNote(o, st, node, dstErr, tErr) {
   if (o.move) return { cls: "xwarn", text: `${name} already holds this digest. Only the source is removed.` };
   return { cls: "xwarn", text: `${name} is already identical, nothing to copy.`, block: true };
 }
-function pathBadge(dstErr, exists) {
+function pathBadge(o, path, dstErr, node) {
   if (dstErr) return el("span", { className: "xerr", textContent: dstErr });
+  if (node && folderLike(node)) return el("span", { className: "xwarn", textContent: `${path} is a folder. ${o.move ? "Moving" : "Copying"} here makes a repository named ${path} beside what it holds.` });
+  const exists = !!node?.repo;
   return el("span", { className: "tagbadge" + (exists ? "" : " new"), textContent: exists ? "existing repository" : "new repository" });
 }
 function transferLead(o) {
@@ -1780,13 +1783,13 @@ function transfer(o) {
     const preview = el("div", { className: "preview" });
     const go = el("button", { type: "button", className: "primary", textContent: verb });
     const setPath = (path) => { st.path = path; pathIn.value = path; update(); };
-    const picker = createPicker(st, (n) => setPath(n.path));
+    const picker = createPicker(st, (n) => setPath(n.repo ? n.path : `${n.path}/${o.repo.split("/").pop()}`)); // a folder takes the source name inside it
     const chips = createChips(st, o, setPath);
     function update() {
       const dstErr = destError(o, st.path), tErr = tagError(st.tag);
       const node = tree.byPath.get(st.path), exists = !dstErr && !!node?.repo;
       const note = tagNote(o, st, node, dstErr, tErr);
-      pathStat.replaceChildren(pathBadge(dstErr, exists));
+      pathStat.replaceChildren(pathBadge(o, st.path, dstErr, node));
       tagStat.replaceChildren(...(note ? [el("span", { className: note.cls, textContent: note.text })] : []));
       go.disabled = !!(o.block || dstErr || note?.block);
       preview.replaceChildren(...previewEls(dstErr || tErr, `${cfg.registryHost || "<REGISTRY>"}/${st.path}:${st.tag}`));
