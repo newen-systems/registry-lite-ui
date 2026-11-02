@@ -1542,3 +1542,58 @@ class Stream(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Storage(unittest.TestCase):
+    """Layer push times and tag history, read from a registry:2 filesystem storage tree mounted read-only."""
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.root)
+        v2 = os.path.join(self.root, R.STORAGE)
+
+        def touch(path, when):
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            open(path, "w").close()
+            os.utime(path, (when, when))
+        touch(os.path.join(v2, "blobs/sha256", "22", "2" * 64, "data"), 1000)  # the layer of D("b"), pushed long ago
+        tags = os.path.join(v2, "repositories/a/app/_manifests/tags/latest/index/sha256")
+        revisions = os.path.join(v2, "repositories/a/app/_manifests/revisions/sha256")
+        touch(os.path.join(tags, "b" * 64, "link"), 3000)  # latest now, rebuilt under the same tag
+        touch(os.path.join(tags, "c" * 64, "link"), 2000)  # what latest pointed at before
+        touch(os.path.join(tags, "not-a-digest", "link"), 4000)
+        touch(os.path.join(revisions, "b" * 64, "link"), 3000)  # D("c") was deleted: in the history, not pullable
+
+    def test_blob_pushed(self):
+        self.assertEqual(R.blob_pushed(self.root, D("2")), 1000)
+        self.assertIsNone(R.blob_pushed(self.root, D("9")))  # not in storage
+        self.assertIsNone(R.blob_pushed(None, D("2")))  # storage not mounted
+        self.assertIsNone(R.blob_pushed(self.root, "sha256:../../etc"))
+
+    def test_tag_history_newest_first(self):
+        self.assertEqual(R.tag_history(self.root, "a/app", "latest"), [
+            {"digest": D("b"), "time": 3000, "present": True}, {"digest": D("c"), "time": 2000, "present": False}])
+        self.assertEqual(R.tag_history(self.root, "a/app", "missing"), [])
+        self.assertEqual(R.tag_history(None, "a/app", "latest"), [])
+        self.assertEqual(R.tag_history(self.root, "a/app", ".."), [])
+        with self.assertRaises(R.RegistryError):
+            R.tag_history(self.root, "../a", "latest")
+
+    def test_manifest_route(self):
+        cfg = S.Config({"UI_REGISTRY_STORAGE_MOUNT": self.root})
+        cfg.client = FakeClient()
+        cfg.client.call = lambda *a, **k: (200, {}, b"{}")
+        cfg.client.delete_enabled = lambda: True
+        get = S.routes(cfg)[0]
+        m = get["/api/manifest"]({"repo": ["a/app"], "ref": [D("b")], "tags": ["0"]})
+        self.assertEqual(m["layers"], [{"digest": D("2"), "size": None, "pushed": 1000}])
+        self.assertEqual(len(get["/api/history"]({"repo": ["a/app"], "tag": ["latest"]})), 2)
+        self.assertTrue(get["/api/config"]({})["storageMount"])
+
+    def test_without_storage(self):
+        cfg = S.Config({"UI_REGISTRY_STORAGE_MOUNT": os.path.join(self.root, "absent")})
+        self.assertIsNone(cfg.storage_mount)  # a missing mount turns the feature off, the UI still starts
+        cfg.client = FakeClient()
+        cfg.client.call = lambda *a, **k: (200, {}, b"{}")
+        get = S.routes(cfg)[0]
+        self.assertNotIn("pushed", get["/api/manifest"]({"repo": ["a/app"], "ref": [D("b")], "tags": ["0"]})["layers"][0])
+        self.assertEqual(get["/api/history"]({"repo": ["a/app"], "tag": ["latest"]}), [])

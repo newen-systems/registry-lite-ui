@@ -78,6 +78,10 @@ class Config:
         self.registry_service = env.get("UI_REGISTRY_SERVICE", "").strip()  # display only: the registry's compose service, for the garbage collection command
         if self.registry_service and not (len(self.registry_service) <= 63 and VOLUME_RE.fullmatch(self.registry_service)):
             raise ValueError("UI_REGISTRY_SERVICE must be a compose service name such as registry")
+        self.storage_mount = env.get("UI_REGISTRY_STORAGE_MOUNT", "").strip() or None  # the registry's storage root, mounted read-only
+        if self.storage_mount and not os.path.isdir(self.storage_mount):
+            log.warning("UI_REGISTRY_STORAGE_MOUNT %s is not a directory: layer push times and tag history are off", self.storage_mount)
+            self.storage_mount = None
         self.registry_host = env.get("UI_REGISTRY_HOST", "").strip()  # what clients type to reach the registry, shown in the pull and push commands
         if self.registry_host and not HOST_RE.fullmatch(self.registry_host):
             raise ValueError("UI_REGISTRY_HOST must be host or host:port, without a scheme or path")
@@ -122,7 +126,7 @@ def descriptor(d):
     return {"digest": R.check_digest(d.get("digest")), "size": d["size"] if isinstance(d.get("size"), int) else None}
 
 
-def view_manifest(c, repo, ref, with_tags=True):
+def view_manifest(c, repo, ref, with_tags=True, storage=None):
     """with_tags=False skips tags_of(), which lists the repository and HEADs every tag. The pane rows and the tag detail
     use that form and work the shared tags out from the tag list they already hold; delete and move ask for the real list."""
     data, mtype, digest = c.manifest(repo, ref)
@@ -135,6 +139,9 @@ def view_manifest(c, repo, ref, with_tags=True):
         platform = d.get("platform") if isinstance(d.get("platform"), dict) else {}
         out["platforms"].append({**descriptor(d), **{k: str(platform[k]) for k in ("os", "architecture", "variant") if k in platform}})
     out["layers"] = [descriptor(d) for d in m.get("layers", [])]
+    if storage:  # when each layer was pushed, from the registry's own files mounted read-only
+        for layer in out["layers"]:
+            layer["pushed"] = R.blob_pushed(storage, layer["digest"])
     if "config" in m:
         out["config"] = R.check_digest(m["config"].get("digest"))
         ctype = m["config"].get("mediaType")
@@ -292,7 +299,7 @@ def routes(cfg):
         "/api/config": lambda q: {"csrf": cfg.csrf, "readonly": cfg.readonly, "deleteEnabled": delete_enabled(),
                                   "registry": cfg.registry_url,
                                   "registryHost": cfg.registry_host or urllib.parse.urlsplit(cfg.registry_url).netloc,
-                                  "registryHostSet": bool(cfg.registry_host), "environments": cfg.environments, "registryStorage": cfg.registry_storage, "registryService": cfg.registry_service,
+                                  "registryHostSet": bool(cfg.registry_host), "environments": cfg.environments, "registryStorage": cfg.registry_storage, "registryService": cfg.registry_service, "storageMount": bool(cfg.storage_mount),
                                   "version": cfg.version, "revision": cfg.revision, "login": cfg.login_url, "logout": cfg.logout_url, "maxBatch": R.MAX_BATCH, "pollInterval": cfg.interval, "pollMin": cfg.poll_min,
                                   "pypi": cfg.pypi.config() if cfg.pypi else None},
         "/api/repos": lambda q: sorted(c.catalog()),
@@ -300,7 +307,8 @@ def routes(cfg):
         "/api/recent": recent,
         "/api/tagnames": tagnames,
         "/api/parents": parents,
-        "/api/manifest": lambda q: view_manifest(c, one(q, "repo"), one(q, "ref"), q.get("tags", ["1"])[0] != "0"),
+        "/api/history": lambda q: R.tag_history(cfg.storage_mount, one(q, "repo"), one(q, "tag")),  # [] without the storage
+        "/api/manifest": lambda q: view_manifest(c, one(q, "repo"), one(q, "ref"), q.get("tags", ["1"])[0] != "0", cfg.storage_mount),
     }
     post = {
         "/api/copy": woken(lambda *a: {"digest": R.copy(c, *a)}),

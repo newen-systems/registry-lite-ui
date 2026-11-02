@@ -3,6 +3,7 @@ import base64
 import hashlib
 import json
 import logging
+import os
 import re
 import ssl
 import urllib.error
@@ -384,6 +385,47 @@ def delete_tags(c, repo, tags, with_children=False):
             done[digest] = {"tag": tag, "digest": digest, "status": "failed", "error": e.message}
         out[tag] = done[digest]
     return [out[t] for t in heads]  # in the order asked
+
+
+STORAGE = "docker/registry/v2"  # under the root of registry:2's filesystem storage driver
+MAX_HISTORY = 100  # digests one tag history returns, newest first
+
+
+def blob_pushed(mount, digest):
+    """When registry:2 wrote a blob: the mtime of its data file, in seconds. A blob mounted into another repository is not
+    written again, so a layer shared with older images keeps its first push. None without the storage or the file."""
+    if not mount or not DIGEST_RE.fullmatch(digest or ""):
+        return None
+    alg, hexed = digest.split(":")
+    try:
+        return int(os.stat(os.path.join(mount, STORAGE, "blobs", alg, hexed[:2], hexed, "data")).st_mtime)
+    except OSError:
+        return None
+
+
+def tag_history(mount, repo, tag):
+    """Every digest a tag has pointed at, from the tag's index in storage, newest first: when it took that digest (the mtime
+    of its link) and whether the manifest is still there to pull by digest. [] without the storage."""
+    check_repo(repo)
+    if not mount or not TAG_RE.fullmatch(tag):
+        return []
+    base = os.path.join(mount, STORAGE, "repositories", repo, "_manifests")
+    index, out = os.path.join(base, "tags", tag, "index"), []
+    try:
+        algs = [a for a in os.listdir(index) if a in ("sha256", "sha512")]
+        for alg in algs:
+            for hexed in os.listdir(os.path.join(index, alg)):
+                digest = f"{alg}:{hexed}"
+                if not DIGEST_RE.fullmatch(digest):
+                    continue
+                try:
+                    when = int(os.stat(os.path.join(index, alg, hexed, "link")).st_mtime)
+                except OSError:
+                    continue
+                out.append({"digest": digest, "time": when, "present": os.path.exists(os.path.join(base, "revisions", alg, hexed, "link"))})
+    except OSError:
+        return []
+    return sorted(out, key=lambda h: (-h["time"], h["digest"]))[:MAX_HISTORY]
 
 
 def move(c, src, src_ref, dst, dst_ref):

@@ -41,13 +41,14 @@ services:
       UI_ENVIRONMENTS: "${UI_ENVIRONMENTS:-}"
       UI_REGISTRY_STORAGE: "${UI_REGISTRY_STORAGE:-}"
       UI_REGISTRY_SERVICE: "${UI_REGISTRY_SERVICE:-registry}"
+      UI_REGISTRY_STORAGE_MOUNT: /registry  # the registry data, read-only: when each layer was pushed, and what a tag pointed at before
       UI_POLL_INTERVAL: "${UI_POLL_INTERVAL:-30}"
       UI_POLL_BURST: "${UI_POLL_BURST:-5}"
       UI_POLL_BURST_MAX: "${UI_POLL_BURST_MAX:-600}"
       UI_POLL_MIN: "${UI_POLL_MIN:-10}"
       UI_STATE_DIR: /state
       UI_MAX_EVENTS: "${UI_MAX_EVENTS:-1000}"
-    volumes: [ui-state:/state]
+    volumes: [ui-state:/state, registry-data:/registry:ro]
     mem_limit: 128m
     pids_limit: 128
     cpus: 0.5

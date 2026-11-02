@@ -4,6 +4,15 @@ registry-lite-ui is a web UI for a plain `registry:2` that browses, copies, move
 
 `podman-compose up -d` with `compose.yml` (registry and UI), or `podman-compose -f compose.ui.yml up -d` with `REGISTRY_URL` set for a registry that already runs. `docker compose` works the same way. Pin `UI_IMAGE` to a version or a digest in your `.env`.
 
+## Changes in 0.2.23
+
+- The tag page names its digest: an index digest (what a pull by tag and Renovate use), a manifest digest (one platform, no index) or a platform digest. The Platforms table lists each platform digest with a copy button.
+- Tag history: every digest a tag has pointed at, when it took it, and whether it is current, pullable by digest or deleted. Read from the registry storage mounted read-only, set with the new `UI_REGISTRY_STORAGE_MOUNT`. `compose.yml` mounts it.
+- The Layers table has an order column and, with the storage mounted, when each layer was pushed. Every column sorts.
+- Tags on one digest are marked wherever they sit in the tag list, not only when they are next to each other. Hovering one highlights the others.
+- Copy to and Move to: clicking a folder in the picker opens it and keeps its place. Before, focus jumped back to the previous row and the list scrolled away, and the picked folder was not highlighted.
+- README: pin deploys by digest.
+
 ## Changes in 0.2.22
 
 - A repository has its own stacked icon in the tree, the destination picker, folder lists and its page. The folder icon now means a path that is only a parent, such as `team` in `team/app`.
