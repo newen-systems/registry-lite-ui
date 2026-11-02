@@ -965,15 +965,27 @@ function tagRow(t) { // a table row for a tag, whose kind, size, platforms and b
     el("td", { className: "nw dcell" }, code(short(t.digest)), rowCopy(t.digest, `Copy digest for ${t.tag}`), r.link), sz, plat, built, el("td", { className: "mut", textContent: ago(t.changed) }));
   return r;
 }
-// Neighbouring rows on one digest are joined by a line in the Digest column: start, mid and end of each run.
+// The mark in the Digest column of each row whose digest another tag shares, wherever that tag is in the list. Neighbouring
+// rows on one digest are joined by a line (start, mid and end of each run), any other shared row gets the dot alone (solo).
+function digestLinks(digests, counts) {
+  return digests.map((d, i) => {
+    const up = digests[i - 1] === d, down = digests[i + 1] === d;
+    if (up || down) return up && down ? "mid" : up ? "end" : "start";
+    return counts.get(d) > 1 ? "solo" : null;
+  });
+}
+// Hovering a marked row lights up every row on its digest.
 function linkDigests(n, rs) {
   const tags = new Map();
   for (const t of n.tagList) tags.set(t.digest, [...(tags.get(t.digest) || []), t.tag]);
+  const links = digestLinks(rs.map((r) => r.t.digest), new Map([...tags].map(([d, ts]) => [d, ts.length])));
+  const same = (d) => rs.forEach((x) => x.tr.classList.toggle("same", x.t.digest === d));
   rs.forEach((r, i) => {
-    const up = rs[i - 1]?.t.digest === r.t.digest, down = rs[i + 1]?.t.digest === r.t.digest;
-    if (up || down) r.tr.dataset.link = up && down ? "mid" : up ? "end" : "start";
+    if (links[i]) r.tr.dataset.link = links[i];
     else delete r.tr.dataset.link;
-    r.link.title = up || down ? "Same manifest: " + tags.get(r.t.digest).join(", ") : "";
+    r.link.title = links[i] ? "Same manifest: " + tags.get(r.t.digest).join(", ") : "";
+    r.tr.onmouseenter = links[i] ? () => same(r.t.digest) : null;
+    r.tr.onmouseleave = links[i] ? () => same(null) : null;
   });
 }
 function tagsList(n) {
@@ -1184,7 +1196,7 @@ function manifestProps(n, m, path, sharing) {
   if (kind !== "image") props.push(tableRow("Type", kind === "helm" ? KIND_LABEL.helm : `${KIND_LABEL.artifact}, ${m.configType}`));
   if (n.kind === "tag") props.push(tableRow("Image", copyValue(`${host}/${path}:${n.tag}`, "Copy image reference")),
     tableRow("Pinned tag", copyValue(`${host}/${path}:${n.tag}@${m.digest}`, "Copy tag reference pinned to its digest")));
-  props.push(tableRow("Pinned", copyValue(`${host}/${path}@${m.digest}`, "Copy pinned image reference")), tableRow("Digest", copyValue(m.digest, "Copy digest")),
+  props.push(tableRow("Pinned", copyValue(`${host}/${path}@${m.digest}`, "Copy pinned image reference")), tableRow(...digestRow(n, m)),
     tableRow("Media type", code(m.mediaType)), tableRow("Manifest size", size(m.size)));
   if (m.layers.length) props.push(tableRow("Layers size", size(layersTotal(m))));
   if (m.created) props.push(tableRow("Created", el("span", { title: new Date(m.created).toLocaleString(), textContent: ago(createdMs(m) / 1000) })));
@@ -1194,12 +1206,44 @@ function manifestProps(n, m, path, sharing) {
   if (m.config) props.push(tableRow("Config", code(m.config)));
   return props;
 }
+// An index digest and a platform digest are different numbers for one image, and a pull by tag, Renovate and a mirror that
+// copies one platform each show one of them, so the label says which this is.
+function digestRow(n, m) {
+  const [label, note] = m.index ? ["Index digest", "multi-arch index: what a pull by tag resolves to, and what Renovate pins"]
+    : n.kind === "tag" ? ["Manifest digest", "one platform, no index: a mirror that copied one platform of a multi-arch image has this digest, not the index digest of the source"]
+      : ["Platform digest", "one platform inside the index"];
+  return [label, el("span", {}, copyValue(m.digest, "Copy digest"), el("span", { className: "mut note", textContent: note }))];
+}
+// What the tag pointed at before, from the registry storage: each digest it took, when, and whether that manifest is still there.
+function historySection(path, m, history) {
+  if (!history?.length) return [];
+  const host = cfg.registryHost || "<REGISTRY>";
+  const state = (h) => (h.digest === m.digest ? "current" : h.present ? "pullable by digest" : "deleted");
+  return subTable("Tag history", ["Digest", "Took the tag", "State"], history.map((h) => el("tr", {},
+    el("td", { className: "nw" }, code(short(h.digest)), rowCopy(`${host}/${path}@${h.digest}`, "Copy pinned reference")),
+    el("td", { title: new Date(h.time * 1000).toLocaleString(), textContent: ago(h.time) }), el("td", { className: "mut", textContent: state(h) }))));
+}
+const LAYER_COLUMNS = [
+  { key: "n", label: "#", tip: "Order in the manifest, base layer first", val: (l) => l.n, cmp: numCmp },
+  { key: "digest", label: "Digest", val: (l) => l.digest, cmp: collator.compare },
+  { key: "size", label: "Size", val: (l) => l.size, cmp: numCmp },
+  { key: "pushed", label: "Pushed", tip: "When the registry first stored the layer, from its file time. A layer shared with older images keeps its first push.", val: (l) => l.pushed ?? null, cmp: numCmp },
+];
+function layersSection(m) {
+  if (!m.layers.length) return [];
+  const timed = !!cfg.storageMount, items = m.layers.map((l, i) => ({ ...l, n: i + 1 }));
+  const when = (t) => el("td", { className: "mut", title: t ? new Date(t * 1000).toLocaleString() : "", textContent: t ? ago(t) : "" });
+  const row = (l) => el("tr", {}, el("td", { className: "mut", textContent: String(l.n) }), el("td", {}, code(l.digest)), el("td", { textContent: size(l.size) }), ...(timed ? [when(l.pushed)] : []));
+  const hint = timed ? [] : [el("p", { className: "hint", textContent: "Mount the registry storage read-only and set UI_REGISTRY_STORAGE_MOUNT to see when each layer was pushed." })];
+  return [el("h3", { textContent: "Layers" }), ...listView({ id: "layers:" + m.digest, items, columns: timed ? LAYER_COLUMNS : LAYER_COLUMNS.slice(0, 3),
+    defaultCmp: (a, b) => a.n - b.n, tie: (a, b) => a.n - b.n, match: (l, text) => l.digest.includes(text), placeholder: "Filter layers", row }), ...hint];
+}
 function platformSections(n, m) {
   const real = m.platforms.filter((p) => !isAtt(p)), atts = m.platforms.length - real.length;
   const node = (p) => (n.kind === "tag" && n.plats ? n.plats.find((x) => x.digest === p.digest) : null);
-  const row = (p) => el("tr", {}, el("td", {}, node(p) ? link(node(p), platName(p)) : platName(p)), el("td", {}, code(short(p.digest))), el("td", { textContent: size(p.size) }));
+  const row = (p) => el("tr", {}, el("td", {}, node(p) ? link(node(p), platName(p)) : platName(p)), el("td", { className: "nw" }, code(short(p.digest)), rowCopy(p.digest, `Copy digest for ${platName(p)}`)), el("td", { textContent: size(p.size) }));
   const note = `+${atts} attestation${atts > 1 ? "s" : ""}, hidden from the list. Copy and delete handle them with the image.`;
-  return [...subTable("Platforms", ["Platform", "Digest", "Size"], real.map((p) => row(p))), ...(atts ? [el("p", { className: "mut", textContent: note })] : [])];
+  return [...subTable("Platforms", ["Platform", "Platform digest", "Size"], real.map((p) => row(p))), ...(atts ? [el("p", { className: "mut", textContent: note })] : [])];
 }
 function manifestHeading(n, t, path, kind) {
   const isTag = n.kind === "tag";
@@ -1210,11 +1254,11 @@ async function manifestPane(n, seq) {
   const ref = n.kind === "tag" ? n.tag : n.digest;
   const m = await getManifest(path, ref, n.digest);
   if (n.kind === "tag") await ensurePlats(n);
+  const history = n.kind === "tag" && cfg.storageMount ? await api(`/api/history?repo=${encodeURIComponent(path)}&tag=${encodeURIComponent(n.tag)}`).catch(() => []) : [];
   if (seq !== paneSeq) return;
   const sharing = t.parent.tagList.filter((x) => x.digest === m.digest).map((x) => x.tag); // from the tag list the pane already holds
   showMain(crumbs(n), manifestHeading(n, t, path, artifactKind(m)), actions(path, ref, m.digest), el("table", { className: "props" }, ...manifestProps(n, m, path, sharing)),
-    ...(n.kind === "tag" ? [commandsEl(path, n.tag, m.digest, artifactKind(m))] : []), ...platformSections(n, m),
-    ...subTable("Layers", ["Digest", "Size"], m.layers.map((l) => el("tr", {}, el("td", {}, code(l.digest)), el("td", { textContent: size(l.size) })))));
+    ...(n.kind === "tag" ? [commandsEl(path, n.tag, m.digest, artifactKind(m))] : []), ...platformSections(n, m), ...historySection(path, m, history), ...layersSection(m));
 }
 
 function notFoundPane() {
@@ -1624,6 +1668,8 @@ function createPicker(st, onChoose) {
   const open = new Set(); // ids of open folders
   let focusId = null;
   const box = el("div", { className: "picker", role: "tree", "aria-label": "Folders and repositories" });
+  // The node st.path names, else the folder it would go inside (a picked folder takes the source name, a path not there yet).
+  const chosen = () => tree.byPath.get(st.path) || tree.byPath.get(st.path.slice(0, st.path.lastIndexOf("/")));
   const flat = () => {
     const out = [];
     const walk = (n, depth, anc, last) => {
@@ -1641,7 +1687,7 @@ function createPicker(st, onChoose) {
     const n = r.n, isOpen = open.has(n.id);
     const row = el("div", {
       className: "row", role: "treeitem", id: "px-" + n.id, tabIndex: n.id === focusId ? 0 : -1,
-      "aria-level": r.depth + 1, "aria-selected": String(n.path === st.path),
+      "aria-level": r.depth + 1, "aria-selected": String(n === chosen()),
     }, ...guidesFor(r), el("span", { className: "chev" }, n.kids.size ? icon("chev") : null), icon(n.repo ? "repo" : isOpen ? "folderOpen" : "folder"), el("span", { className: "lbl", textContent: n.name }));
     row.dataset.id = n.id;
     if (n.kids.size) row.setAttribute("aria-expanded", String(isOpen));
@@ -1683,13 +1729,17 @@ function createPicker(st, onChoose) {
   box.addEventListener("click", (e) => {
     const n = nodeOf(e.target);
     if (!n) return;
-    if (e.target.closest(".chev")) setOpen(n, !open.has(n.id)); // a click on the row only selects, the chevron opens
-    else onChoose(n);
+    focusId = n.id; // else the redraw puts focus, and the scroll, back on the row focused before
+    if (e.target.closest(".chev")) setOpen(n, !open.has(n.id)); // a click on a repository only selects, on a folder it also opens
+    else {
+      if (!n.repo) open.add(n.id);
+      onChoose(n);
+    }
   });
   box.addEventListener("keydown", (e) => {
     const n = nodeOf(e.target);
     if (!n) return;
-    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onChoose(n); return; }
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); focusId = n.id; onChoose(n); return; }
     const list = flat(), to = arrowTarget(e.key, list, list.findIndex((r) => r.n === n), ops);
     if (to === undefined) return;
     e.preventDefault();

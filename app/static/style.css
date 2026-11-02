@@ -250,6 +250,9 @@ tr[data-link] .dlink { display:block; }
 tr[data-link=start] .dlink::before { top:50%; } tr[data-link=end] .dlink::before { bottom:50%; }
 .dlink::after { content:""; position:absolute; left:0; top:50%; width:6px; height:6px; margin-top:-5px; border:2px solid var(--acc); border-radius:50%; background:var(--panel); }
 tr:hover .dlink::after { background:var(--hover); } tr.pickable.on .dlink::after { background:var(--acc-soft); }
+tr[data-link=solo] .dlink::before { display:none; } /* shared with a tag elsewhere in the list: the dot alone */
+tr.same td { background:var(--hover); } tr.same .dlink::after { background:var(--acc); } /* every row on the hovered digest */
+.props .note { display:block; margin-top:2px; font-size:12px; }
 th.pick, td.pick { width:20px; padding-right:0; } .pick input { width:16px; height:16px; margin:0; vertical-align:middle; accent-color:var(--acc); cursor:pointer; }
 .sbody > .dlg-warn { margin:var(--s2) 0; }
 .results td { font-size:13px; } .results td:last-child { overflow-wrap:anywhere; }
