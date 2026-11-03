@@ -4,6 +4,12 @@ registry-lite-ui is a web UI for a plain `registry:2` that browses, copies, move
 
 `podman-compose up -d` with `compose.yml` (registry and UI), or `podman-compose -f compose.ui.yml up -d` with `REGISTRY_URL` set for a registry that already runs. `docker compose` works the same way. Pin `UI_IMAGE` to a version or a digest in your `.env`.
 
+## Changes in 0.2.25
+
+- Base image bumped to the current UBI 9.8 Python 3.12 minimal build. It fixes CVE-2026-114406 (critical, ca-certificates), CVE-2026-77214 and CVE-2026-102633 (expat), CVE-2026-34743 (xz-libs) and CVE-2026-8932 (curl).
+- pip is removed from the image. The app uses the standard library only, so nothing installs packages at run time, and pip 24.2 carried six advisories.
+- Grype now reports no vulnerability with a fix in the image, for linux/amd64 and linux/arm64.
+
 ## Changes in 0.2.24
 
 - The GitLab CI build publishes the same tags as ghcr.io: a release tag `vX.Y.Z` publishes `X.Y.Z`, `X.Y`, `X` and `latest`, and main moves `edge`. Before, main moved `latest` and a release was published only as `vX.Y.Z`, so Renovate on a GitLab copy saw no `X.Y.Z` releases and raised digest updates of `latest`. A deployment that follows `latest` from a GitLab copy now gets releases only: use `edge` to follow main.
