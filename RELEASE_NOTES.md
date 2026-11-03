@@ -4,6 +4,12 @@ registry-lite-ui is a web UI for a plain `registry:2` that browses, copies, move
 
 `podman-compose up -d` with `compose.yml` (registry and UI), or `podman-compose -f compose.ui.yml up -d` with `REGISTRY_URL` set for a registry that already runs. `docker compose` works the same way. Pin `UI_IMAGE` to a version or a digest in your `.env`.
 
+## Changes in 0.2.24
+
+- The GitLab CI build publishes the same tags as ghcr.io: a release tag `vX.Y.Z` publishes `X.Y.Z`, `X.Y`, `X` and `latest`, and main moves `edge`. Before, main moved `latest` and a release was published only as `vX.Y.Z`, so Renovate on a GitLab copy saw no `X.Y.Z` releases and raised digest updates of `latest`. A deployment that follows `latest` from a GitLab copy now gets releases only: use `edge` to follow main.
+- A GitLab release tag that does not match `VERSION` fails the pipeline before the build.
+- `BUILD_PLATFORM` sets the platform of the GitLab build, which otherwise is the runner's own architecture.
+
 ## Changes in 0.2.23
 
 - The tag page names its digest: an index digest (what a pull by tag and Renovate use), a manifest digest (one platform, no index) or a platform digest. The Platforms table lists each platform digest with a copy button.

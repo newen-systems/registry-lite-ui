@@ -20,11 +20,16 @@ build:
     BUILDAH_ISOLATION: chroot
     BUILDAH_FORMAT: docker  # keeps HEALTHCHECK, which the OCI format drops
   script:
-    - buildah build ${BASE_IMAGE:+--build-arg "BASE_IMAGE=$BASE_IMAGE"} --build-arg "APP_VERSION=$(cat VERSION)" --build-arg "APP_REVISION=$CI_COMMIT_SHA" -f Containerfile -t "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA" .
+    # a pipeline for tag vX.Y.Z that does not match VERSION fails here, before the build
+    - release=$(.github/scripts/release.sh decide "refs/tags/${CI_COMMIT_TAG:-}" "$(cat VERSION)")
+    # BUILD_PLATFORM (for example linux/amd64) sets the image platform. Unset, the image is built for the runner's own architecture.
+    - buildah build ${BUILD_PLATFORM:+--platform "$BUILD_PLATFORM"} ${BASE_IMAGE:+--build-arg "BASE_IMAGE=$BASE_IMAGE"} --build-arg "APP_VERSION=$(cat VERSION)" --build-arg "APP_REVISION=$CI_COMMIT_SHA" -f Containerfile -t "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA" .
     - |
+      # same tags as ghcr.io: main moves edge, a release tag vX.Y.Z publishes X.Y.Z (what Renovate pins), X.Y, X and latest
+      version=$(cat VERSION)
       tags=""
-      [ "$CI_COMMIT_BRANCH" = "$CI_DEFAULT_BRANCH" ] && tags="$tags latest"
-      [ -n "$CI_COMMIT_TAG" ] && tags="$tags $CI_COMMIT_TAG"
+      [ "$CI_COMMIT_BRANCH" = "$CI_DEFAULT_BRANCH" ] && tags="edge"
+      [ "$release" = release=true ] && tags="$tags $version ${version%.*} ${version%%.*} latest"
       if [ -n "$tags" ]; then
         if [ -n "${REGISTRY_CA_BUNDLE:-}" ]; then  # a File variable holding the PEM chain, for a registry with an internal CA
           mkdir -p "/etc/containers/certs.d/$CI_REGISTRY" && cp "$REGISTRY_CA_BUNDLE" "/etc/containers/certs.d/$CI_REGISTRY/ca.crt"
