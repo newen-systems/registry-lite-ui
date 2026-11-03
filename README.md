@@ -118,6 +118,8 @@ A release is `X.Y.Z`, `X.Y`, `X` and `latest`; main is `edge`; every build is `s
 
 A `VERSION` bump without a tag is never published.
 
+`RELEASE_NOTES.md` has a `## Changes in X.Y.Z` section for every release, with its entries under `### New Features`, `### Bug Fixes` and `### Chores` in that order (an empty heading is left out). Each entry is one line that ends with a link to its commit or pull request. The GitHub Release body is that section only, a link to the changes since the previous release, and the image digests. A build fails when `VERSION` has no section.
+
 ## Ports and volumes
 
 - UI on 8080, the registry on 5000. The UI is never on the push or pull path: stop it and clients carry on.

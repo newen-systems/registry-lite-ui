@@ -22,6 +22,7 @@ jobs:
         run: |
           .github/scripts/release.sh check "$(cat VERSION)"
           tests/release.sh
+          .github/scripts/release.sh notes "$(cat VERSION)" RELEASE_NOTES.md >/dev/null  # VERSION has its release notes before anything is built
           .github/scripts/release.sh decide "$GITHUB_REF" "$(cat VERSION)"  # a tag that does not match VERSION fails here, before any build
       - name: Simulate a checkout made under umask 077
         run: chmod -R go-rwx app
@@ -145,8 +146,14 @@ jobs:
           VERSION: ${{ steps.decide.outputs.version }}
         run: |
           raw=$(skopeo inspect --raw "docker://$REF")
+          # the body is this release's section only, and the release fails without one
+          section=$(.github/scripts/release.sh notes "$VERSION" RELEASE_NOTES.md)
+          prev=$(git ls-remote --tags origin 'v*' | .github/scripts/release.sh prev "$VERSION")
           {
-            cat RELEASE_NOTES.md
+            printf '%s\n' "$section"
+            if [ -n "$prev" ]; then
+              printf '\nFull history: https://github.com/%s/compare/%s...v%s\n' "$GITHUB_REPOSITORY" "$prev" "$VERSION"
+            fi
             printf '\n## Image\n\n`%s:%s` (also `%s`, `%s` and `latest`), linux/amd64 and linux/arm64, uid 65534.\n\n' "$IMAGE" "$VERSION" "${VERSION%.*}" "${VERSION%%.*}"
             printf 'Manifest list: `%s@sha256:%s`\n\n' "$IMAGE" "$(printf %s "$raw" | sha256sum | cut -d' ' -f1)"
             printf %s "$raw" | jq -r '.manifests[] | "- \(.platform.os)/\(.platform.architecture): `\(.digest)`"'
