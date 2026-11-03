@@ -4,15 +4,24 @@ registry-lite-ui is a web UI for a plain `registry:2` that browses, copies, move
 
 `podman-compose up -d` with `compose.yml` (registry and UI), or `podman-compose -f compose.ui.yml up -d` with `REGISTRY_URL` set for a registry that already runs. `docker compose` works the same way. Pin `UI_IMAGE` to a version or a digest in your `.env`.
 
+## Changes in 0.2.27
+
+### Chores
+
+- Each GitHub release shows only its own section of these notes, grouped by type, with a link to the full history, and a build fails when `VERSION` has no section here ([#44](https://github.com/newen-systems/registry-lite-ui/pull/44))
+
 ## Changes in 0.2.26
 
-- Build tags are now `sha-<first 7 hex of the commit>`, on ghcr.io and in the GitLab build. The amd64 and arm64 images are pushed by digest with no tag. Before, each build added `<full sha>`, `<full sha>-amd64` and `<full sha>-arm64`, and Renovate with `loose` versioning read a tag such as `94e9ce83...-arm64` as version 94. Release tags (`X.Y.Z`, `X.Y`, `X`, `latest`) and `edge` are unchanged. Older build tags stay, because earlier releases use those images.
+### Bug Fixes
+
+- Build tags no longer read as versions: platform images are pushed by digest with no tag and each build is tagged `sha-<first 7 hex>`, so Renovate with `loose` versioning stops offering tags such as `94e9ce83...-arm64` as version 94. Older build tags stay because earlier releases use them ([d0abc7e](https://github.com/newen-systems/registry-lite-ui/commit/d0abc7e))
 
 ## Changes in 0.2.25
 
-- Base image bumped to the current UBI 9.8 Python 3.12 minimal build. It fixes CVE-2026-114406 (critical, ca-certificates), CVE-2026-77214 and CVE-2026-102633 (expat), CVE-2026-34743 (xz-libs) and CVE-2026-8932 (curl).
-- pip is removed from the image. The app uses the standard library only, so nothing installs packages at run time, and pip 24.2 carried six advisories.
-- Grype now reports no vulnerability with a fix in the image, for linux/amd64 and linux/arm64.
+### Chores
+
+- Base image bumped to the current UBI 9.8 Python 3.12 minimal build, which fixes CVE-2026-114406 (critical, ca-certificates), CVE-2026-77214 and CVE-2026-102633 (expat), CVE-2026-34743 (xz-libs) and CVE-2026-8932 (curl) ([3128557](https://github.com/newen-systems/registry-lite-ui/commit/3128557))
+- pip removed from the image, since the app uses the standard library only. This clears six pip 24.2 advisories, and Grype now reports no fixable vulnerability on linux/amd64 or linux/arm64 ([3128557](https://github.com/newen-systems/registry-lite-ui/commit/3128557))
 
 ## Changes in 0.2.24
 
