@@ -90,36 +90,43 @@ jobs:
           version=$(cat VERSION)
           echo "version=$version" >> "$GITHUB_OUTPUT"
           .github/scripts/release.sh decide "$GITHUB_REF" "$version" | tee -a "$GITHUB_OUTPUT"
+          # the commit tag is sha-<7 hex>, so no build tag can parse as a version
+          echo "REF=$IMAGE:sha-${GITHUB_SHA::7}" >> "$GITHUB_ENV"
       - name: Push the manifest list to ghcr.io
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           printf %s "$GH_TOKEN" | podman login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          # copying the archives straight to the registry keeps the config blob, and with it the HEALTHCHECK
+          # skopeo copies the archives, not podman, which keeps the config blob, and with it the HEALTHCHECK.
+          # Each platform image is pushed by its digest with no tag: only the manifest list is tagged.
           podman manifest create ui
           for a in amd64 arm64; do
-            skopeo copy --format v2s2 docker-archive:ui-$a.tar "docker://$IMAGE:$GITHUB_SHA-$a"
-            podman manifest add ui "docker://$IMAGE:$GITHUB_SHA-$a"
+            skopeo copy --format v2s2 docker-archive:ui-$a.tar dir:ui-$a
+            d=sha256:$(sha256sum ui-$a/manifest.json | cut -d' ' -f1)
+            skopeo copy --preserve-digests dir:ui-$a "docker://$IMAGE@$d"
+            podman manifest add ui "docker://$IMAGE@$d"
           done
           # only the sha tag moves here; the tags users pull move after the pushed image has passed
-          podman manifest push --format v2s2 ui "docker://$IMAGE:$GITHUB_SHA"
-          skopeo inspect --raw "docker://$IMAGE:$GITHUB_SHA" | grep -E '"architecture"'
+          podman manifest push --format v2s2 ui "docker://$REF"
+          skopeo inspect --raw "docker://$REF" | grep -E '"architecture"'
           # skopeo inspect --config hides the field, so read the config blob itself
-          skopeo --override-os linux --override-arch arm64 copy "docker://$IMAGE:$GITHUB_SHA" dir:check
-          grep -lq Healthcheck check/*
-          skopeo inspect --raw "docker://$IMAGE:$GITHUB_SHA" | sha256sum
+          for a in amd64 arm64; do
+            skopeo --override-os linux --override-arch $a copy "docker://$REF" dir:check-$a
+            grep -lq Healthcheck check-$a/*
+          done
+          skopeo inspect --raw "docker://$REF" | sha256sum
       - name: Run the pushed image
         env:
           VERSION: ${{ steps.decide.outputs.version }}
         run: |
           podman run -d --name ui -p 8080:8080 --read-only -v ui-state:/state \
-            -e REGISTRY_URL=http://127.0.0.1:5000 -e UI_STATE_DIR=/state "$IMAGE:$GITHUB_SHA"
+            -e REGISTRY_URL=http://127.0.0.1:5000 -e UI_STATE_DIR=/state "$REF"
           for i in $(seq 30); do curl -fs localhost:8080/healthz && break; sleep 1; done
           curl -fs localhost:8080/healthz
           # /api/config asks the registry, which this run does not start, so read the baked-in value
           podman exec ui printenv APP_VERSION | grep -qx "$VERSION"
           podman exec ui printenv APP_REVISION | grep -qx "$GITHUB_SHA"
-          podman image inspect "$IMAGE:$GITHUB_SHA" --format '{{.Digest}} {{.Architecture}}'
+          podman image inspect "$REF" --format '{{.Digest}} {{.Architecture}}'
       - name: Move the tags users pull
         env:
           RELEASE: ${{ steps.decide.outputs.release }}
@@ -129,15 +136,15 @@ jobs:
           tags=()
           [ "$GITHUB_REF" = refs/heads/main ] && tags+=(edge)
           if [ "$RELEASE" = true ]; then tags+=("$VERSION" "${VERSION%.*}" "${VERSION%%.*}" latest); fi
-          for t in "${tags[@]}"; do skopeo copy --all --preserve-digests "docker://$IMAGE:$GITHUB_SHA" "docker://$IMAGE:$t"; done
-          for t in "${tags[@]}"; do test "$(skopeo inspect --raw "docker://$IMAGE:$t" | sha256sum)" = "$(skopeo inspect --raw "docker://$IMAGE:$GITHUB_SHA" | sha256sum)"; done
+          for t in "${tags[@]}"; do skopeo copy --all --preserve-digests "docker://$REF" "docker://$IMAGE:$t"; done
+          for t in "${tags[@]}"; do test "$(skopeo inspect --raw "docker://$IMAGE:$t" | sha256sum)" = "$(skopeo inspect --raw "docker://$REF" | sha256sum)"; done
       - name: Create the GitHub Release for the tag
         if: steps.decide.outputs.release == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.decide.outputs.version }}
         run: |
-          raw=$(skopeo inspect --raw "docker://$IMAGE:$GITHUB_SHA")
+          raw=$(skopeo inspect --raw "docker://$REF")
           {
             cat RELEASE_NOTES.md
             printf '\n## Image\n\n`%s:%s` (also `%s`, `%s` and `latest`), linux/amd64 and linux/arm64, uid 65534.\n\n' "$IMAGE" "$VERSION" "${VERSION%.*}" "${VERSION%%.*}"

@@ -110,7 +110,7 @@ WantedBy=multi-user.target
 
 ## Tags
 
-A release is `X.Y.Z`, `X.Y`, `X` and `latest`; main is `edge`; every build has its commit sha. Pin `UI_IMAGE` to `X.Y.Z` or a digest, and Renovate finds new releases. `.gitlab-ci.yml` publishes the same tags to a GitLab copy of this repository, built for one platform: the runner's, or `BUILD_PLATFORM` (for example `linux/amd64`). A release is a pushed tag that matches `VERSION`. Every change that bumps `VERSION` is released:
+A release is `X.Y.Z`, `X.Y`, `X` and `latest`; main is `edge`; every build is `sha-<first 7 hex of the commit>`. Those are the only tags. The amd64 and arm64 images are pushed by digest with no tag and are reached through the multi-arch manifest list, so no tag besides a release parses as a version. Tags `<full sha>`, `<full sha>-amd64` and `<full sha>-arm64` from builds before 0.2.26 stay on ghcr.io, because the releases of that time use those images. Pin `UI_IMAGE` to `X.Y.Z` or a digest, and Renovate finds new releases. `.gitlab-ci.yml` publishes the same tags to a GitLab copy of this repository, built for one platform: the runner's, or `BUILD_PLATFORM` (for example `linux/amd64`). A release is a pushed tag that matches `VERSION`. Every change that bumps `VERSION` is released:
 
 1. Merge the release pull request and wait for the main build to pass.
 2. Tag the merge commit with an annotated tag and push it: `git tag -a vX.Y.Z -m "registry-lite-ui X.Y.Z" <merge commit> && git push origin vX.Y.Z`.
