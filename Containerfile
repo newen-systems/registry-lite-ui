@@ -11,7 +11,8 @@ USER 0
 # files must be readable by uid 65534 whatever umask the build host checked them out with.
 # The app is stdlib only, so pip leaves the image: nothing installs packages at run time.
 RUN chmod -R a=rX /app && mkdir /state && chown 65534:65534 /state \
- && rm -rf /opt/app-root/lib/python3*/site-packages/pip /opt/app-root/lib/python3*/site-packages/pip-*.dist-info /opt/app-root/bin/pip*
+ && rm -rf /opt/app-root/lib/python3*/site-packages/pip /opt/app-root/lib/python3*/site-packages/pip-*.dist-info /opt/app-root/bin/pip* \
+ && ! python -c "import pip" 2>/dev/null
 USER 65534:65534
 LABEL org.opencontainers.image.source=https://github.com/newen-systems/registry-lite-ui \
       org.opencontainers.image.version=${APP_VERSION} \
