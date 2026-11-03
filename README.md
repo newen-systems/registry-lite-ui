@@ -104,9 +104,9 @@ WantedBy=multi-user.target
 | | |
 |---|---|
 | Reference | `ghcr.io/newen-systems/registry-lite-ui` |
-| Base | `registry.access.redhat.com/ubi9/python-312-minimal`, pinned by digest in `Containerfile`, stdlib only |
+| Base | `cgr.dev/chainguard/python:latest` (Wolfi, current Python 3, no shell or package manager), pinned by digest in `Containerfile`, stdlib only. The build stage uses `:latest-dev` only to set file modes. |
 | Platforms | linux/amd64, linux/arm64 |
-| User | uid and gid 65534, read-only root filesystem, no capabilities |
+| User | uid and gid 65534, read-only root filesystem, no capabilities. The image has no shell: run checks with `python -c`, as the HEALTHCHECK does. |
 
 ## Tags
 

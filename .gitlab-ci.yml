@@ -2,7 +2,7 @@
 stages: [test, build]
 
 variables:
-  # quay.io/buildah/stable:v1.43.2. A site with an internal mirror sets BUILDAH_IMAGE, and BASE_IMAGE for the Containerfile base, as project CI variables. REGISTRY_CA_BUNDLE (type File) trusts a registry certificate from an internal CA.
+  # quay.io/buildah/stable:v1.43.2. A site with an internal mirror sets BUILDAH_IMAGE, and BASE_IMAGE and BUILD_IMAGE for the Containerfile base and build stage (mirrors of the same digests), as project CI variables. REGISTRY_CA_BUNDLE (type File) trusts a registry certificate from an internal CA.
   BUILDAH_IMAGE: quay.io/buildah/stable@sha256:704af5d17babbd88bd93c06ecea7554001a2e9570e1fd54687188d3ae5de0e55
 
 unit-test:
@@ -25,7 +25,7 @@ build:
     # the commit tag is sha-<7 hex>, as on ghcr.io, so no build tag can parse as a version
     - ref="$CI_REGISTRY_IMAGE:sha-$(printf %s "$CI_COMMIT_SHA" | cut -c1-7)"
     # BUILD_PLATFORM (for example linux/amd64) sets the image platform. Unset, the image is built for the runner's own architecture.
-    - buildah build ${BUILD_PLATFORM:+--platform "$BUILD_PLATFORM"} ${BASE_IMAGE:+--build-arg "BASE_IMAGE=$BASE_IMAGE"} --build-arg "APP_VERSION=$(cat VERSION)" --build-arg "APP_REVISION=$CI_COMMIT_SHA" -f Containerfile -t "$ref" .
+    - buildah build ${BUILD_PLATFORM:+--platform "$BUILD_PLATFORM"} ${BASE_IMAGE:+--build-arg "BASE_IMAGE=$BASE_IMAGE"} ${BUILD_IMAGE:+--build-arg "BUILD_IMAGE=$BUILD_IMAGE"} --build-arg "APP_VERSION=$(cat VERSION)" --build-arg "APP_REVISION=$CI_COMMIT_SHA" -f Containerfile -t "$ref" .
     - |
       # same tags as ghcr.io: main moves edge, a release tag vX.Y.Z publishes X.Y.Z (what Renovate pins), X.Y, X and latest
       version=$(cat VERSION)
