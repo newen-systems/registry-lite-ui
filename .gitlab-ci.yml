@@ -22,8 +22,10 @@ build:
   script:
     # a pipeline for tag vX.Y.Z that does not match VERSION fails here, before the build
     - release=$(.github/scripts/release.sh decide "refs/tags/${CI_COMMIT_TAG:-}" "$(cat VERSION)")
+    # the commit tag is sha-<7 hex>, as on ghcr.io, so no build tag can parse as a version
+    - ref="$CI_REGISTRY_IMAGE:sha-$(printf %s "$CI_COMMIT_SHA" | cut -c1-7)"
     # BUILD_PLATFORM (for example linux/amd64) sets the image platform. Unset, the image is built for the runner's own architecture.
-    - buildah build ${BUILD_PLATFORM:+--platform "$BUILD_PLATFORM"} ${BASE_IMAGE:+--build-arg "BASE_IMAGE=$BASE_IMAGE"} --build-arg "APP_VERSION=$(cat VERSION)" --build-arg "APP_REVISION=$CI_COMMIT_SHA" -f Containerfile -t "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA" .
+    - buildah build ${BUILD_PLATFORM:+--platform "$BUILD_PLATFORM"} ${BASE_IMAGE:+--build-arg "BASE_IMAGE=$BASE_IMAGE"} --build-arg "APP_VERSION=$(cat VERSION)" --build-arg "APP_REVISION=$CI_COMMIT_SHA" -f Containerfile -t "$ref" .
     - |
       # same tags as ghcr.io: main moves edge, a release tag vX.Y.Z publishes X.Y.Z (what Renovate pins), X.Y, X and latest
       version=$(cat VERSION)
@@ -35,9 +37,9 @@ build:
           mkdir -p "/etc/containers/certs.d/$CI_REGISTRY" && cp "$REGISTRY_CA_BUNDLE" "/etc/containers/certs.d/$CI_REGISTRY/ca.crt"
         fi
         printf %s "$CI_JOB_TOKEN" | buildah login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
-        buildah push "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA"
+        buildah push "$ref"
         for t in $tags; do
-          buildah tag "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA" "$CI_REGISTRY_IMAGE:$t"
+          buildah tag "$ref" "$CI_REGISTRY_IMAGE:$t"
           buildah push "$CI_REGISTRY_IMAGE:$t"
         done
       fi
