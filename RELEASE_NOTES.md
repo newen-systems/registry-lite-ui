@@ -4,6 +4,13 @@ registry-lite-ui is a web UI for a plain `registry:2` that browses, copies, move
 
 `podman-compose up -d` with `compose.yml` (registry and UI), or `podman-compose -f compose.ui.yml up -d` with `REGISTRY_URL` set for a registry that already runs. `docker compose` works the same way. Pin `UI_IMAGE` to a version or a digest in your `.env`.
 
+## Changes in 0.2.28
+
+### Chores
+
+- Base image moved from UBI 9 Python 3.12 to Chainguard Python (Wolfi, Python 3.15). The compressed image goes from 181 to 26 MiB, and Grype from 13 high, 169 medium and 95 low to 1 low. The UI still runs as uid 65534 with the same HEALTHCHECK ([#45](https://github.com/newen-systems/registry-lite-ui/pull/45))
+- The image has no shell, `id` or `printenv`: run checks inside the container with `python -c` ([#45](https://github.com/newen-systems/registry-lite-ui/pull/45))
+
 ## Changes in 0.2.27
 
 ### Chores

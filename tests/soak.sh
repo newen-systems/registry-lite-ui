@@ -34,7 +34,7 @@ t0=$(date +%s)
 while [ "$(date +%s)" -lt "$end" ]; do
   sleep 30
   st=$(docker stats --no-stream --format '{{.MemUsage}} {{.PIDs}}' rlui-registry-lite-ui-1 2>/dev/null)
-  size=$(docker exec rlui-registry-lite-ui-1 stat -c %s /state/state.json 2>/dev/null || echo 0)
+  size=$(docker exec rlui-registry-lite-ui-1 python -c "import os; print(os.path.getsize('/state/state.json'))" 2>/dev/null || echo 0)
   rec=$(curl -s "$UI/api/recent?limit=1000" | jq -r '"\(.events | length) \(.seq) \(.tags)"' 2>/dev/null || echo "- - -")
   logb=$(docker logs --since 5m rlui-registry-lite-ui-1 2>&1 | wc -c)
   echo "$(( $(date +%s) - t0 )) ${st%% /*} ${st##* } $size $rec $logb $(docker inspect -f '{{.RestartCount}}' rlui-registry-lite-ui-1)"
