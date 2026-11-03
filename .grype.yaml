@@ -1,0 +1,9 @@
+# Accepted findings, read by `grype` run from the repository root. Recheck each one when
+# Renovate moves the base image digest, and drop the entry once the fix is in the base.
+ignore:
+  # Low. http.client chunked response parsing in Wolfi python-3.15, no fixed package yet.
+  # urllib only reads the registry and GitLab the operator configured, not an
+  # attacker-chosen host. Accepted 2026/11/03. Recheck: drop when a Wolfi Python fix lands.
+  - vulnerability: CVE-2026-103995
+    package:
+      name: python-3.15
