@@ -67,7 +67,7 @@ class Throttle:
 
 
 class State:
-    """Current tag to digest map plus the last `max_events` events no older than `max_age` seconds."""
+    """Current tag to digest map plus the last `max_events` events no older than `max_age` seconds, except that the newest `keep` are kept whatever their age."""
     def __init__(self, path=None, max_events=1000, max_age=30 * 86400, save_every=30, clock=time.time, keep=100):
         self.path, self.max_events, self.max_age, self.save_every, self.clock = path, max_events, max_age, save_every, clock
         self.keep = min(keep, max_events)  # the newest events are kept whatever their age, so Recent is never empty while tags exist

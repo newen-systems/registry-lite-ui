@@ -346,3 +346,4 @@ a.dblk:hover { text-decoration:none; outline:2px solid var(--fg); outline-offset
 .sbar { display:block; width:140px; height:6px; border-radius:3px; background:var(--line); } .sfill { display:block; height:6px; border-radius:3px; background:var(--acc); } .sfill.old { background:var(--amber); }
 .selbar { position:sticky; bottom:0; margin:var(--s3) 0 0; padding:var(--s3) var(--s4); border-radius:var(--r2); background:var(--acc-soft); border:1px solid var(--acc); }
 .selbar[hidden] { display:none; } .selbar .grow { flex:1; } .selcount { font-weight:600; }
+.sortable td:not(.nm) { font-variant-numeric:tabular-nums; }
