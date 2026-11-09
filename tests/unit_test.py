@@ -233,7 +233,7 @@ class StateTests(unittest.TestCase):
 
     def test_event_age_cap(self):
         clk = Clock()
-        s = self.state(clock=clk, max_age=100)
+        s = self.state(clock=clk, max_age=100, keep=0)
         s.mark_baselined()
         s.update({"a"}, {"a:1": "d1"})
         clk.now += 101
@@ -2157,11 +2157,11 @@ class SeedClient:
         if head:
             return b"", IMG, digest
         self.reads += 1
-        return b'{"config":{"digest":"%s"}}' % (D("c").encode() if digest not in self.built else ("sha256:" + digest[7] * 64).encode()), IMG, digest
+        return b'{"config":{"digest":"%s"}}' % (D("c").encode() if digest not in self.built else ("sha256:c" + digest[8:]).encode()), IMG, digest
 
     def call(self, method, path, headers=None, body=None, ok=(200,)):
-        digest = "sha256:" + path.rsplit(":", 1)[1][0] * 64
-        made = next((t for d, t in self.built.items() if d[7] == digest[7]), None)
+        tail = path.rsplit(":", 1)[1][1:]  # the config digest is the image digest with its first character replaced
+        made = next((t for d, t in self.built.items() if d[8:] == tail), None)
         return 200, {}, (json.dumps({"created": made}) if made else "{}").encode()
 
 
@@ -2266,3 +2266,29 @@ class StorageNoFold(unittest.TestCase):
         (repo,) = U.analyse(many, {D(format(i, "x")): {D(f"b{i}"): i} for i in range(1, n)})["tree"]["kids"][0]["kids"]
         self.assertEqual(len(repo["kids"]), U.MAX_LEAVES)
         self.assertTrue(repo["kids"][-1]["name"].startswith("other ("))
+
+
+class RecentFloor(unittest.TestCase):
+    def test_old_tags_still_fill_recent_up_to_the_floor(self):
+        clk = Clock()
+        clk.now = 1794000000.0
+        dg = lambda i: "sha256:" + format(i, "064x")  # noqa: E731
+        made = lambda i: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(clk.now - 90 * 86400 - i * 60))  # noqa: E731
+        reg = SeedClient({"a": {str(i): dg(i) for i in range(1, 201)}}, {dg(i): made(i) for i in range(1, 201)})
+        st = P.State(clock=clk)  # the defaults: 1000 events, 30 days
+        P.Poller(reg, st, max_tags=500).cycle()
+        self.assertEqual(len(st.events), 100)  # 200 tags, all 90 days old: the newest 100 stay
+        times = [e["t"] for e in st.events]
+        self.assertEqual(times, sorted(times))
+        self.assertTrue(all(clk.now - t > 30 * 86400 for t in times))
+        self.assertEqual(min(times), clk.now - 90 * 86400 - 100 * 60)  # tag 100 is the oldest kept
+
+    def test_beyond_the_floor_age_still_prunes(self):
+        clk = Clock()
+        s = P.State(clock=clk, max_age=100, keep=2)
+        s.mark_baselined()
+        for i in range(5):
+            s.update({"a"}, {f"a:{j}": f"d{j}" for j in range(i + 1)})
+        clk.now += 500
+        s.update({"a"}, {f"a:{j}": f"d{j}" for j in range(5)})
+        self.assertEqual(len(s.events), 2)

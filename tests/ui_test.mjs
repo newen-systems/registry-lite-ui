@@ -66,3 +66,23 @@ test("all but the newest N keeps whole images, never half of a digest", () => {
   assert.deepEqual([...allButNewest(rows, 2)].sort(), ["1.0", "old", "old2"]); // d3 (newest at 300) and d2 stay with every tag, d1 and d0 go
   assert.deepEqual([...allButNewest(rows, 10)], []);
 });
+
+test("quick select: the placeholder changes nothing and a day count picks only what is older", () => {
+  const src2 = (name) => load(name);
+  const allButNewest = src2("allButNewest");
+  const quickSelect = new Function("allButNewest", `${src.slice(src.indexOf("\nfunction quickSelect("), src.indexOf("\n}\n", src.indexOf("\nfunction quickSelect(")) + 2)}; return quickSelect;`)(allButNewest);
+  const now = 1_000_000_000, day = 86400;
+  const rows = [
+    { tag: "new", digest: "d1", used: [now - 5 * day, "atime"], pushed: now },
+    { tag: "mid", digest: "d2", used: [now - 100 * day, "atime"], pushed: now - 1 },
+    { tag: "old", digest: "d3", used: [now - 400 * day, "mtime"], pushed: now - 2 },
+    { tag: "none", digest: "d4", used: null, pushed: now - 3 },
+  ];
+  assert.equal(quickSelect("", rows, now), null); // the placeholder is not a choice, and must not select everything
+  assert.equal(quickSelect("0", rows, now), null);
+  assert.equal(quickSelect("abc", rows, now), null);
+  assert.deepEqual([...quickSelect("180", rows, now)], ["old"]);
+  assert.deepEqual([...quickSelect("90", rows, now)].sort(), ["mid", "old"]);
+  assert.deepEqual([...quickSelect("180", rows.map((r) => ({ ...r, used: [now, "atime"] })), now)], []); // everything used today: nothing is stale
+  assert.deepEqual([...quickSelect("none", rows, now)], []);
+});

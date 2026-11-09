@@ -4,6 +4,21 @@ registry-lite-ui is a web UI for a plain `registry:2` that browses, copies, move
 
 `podman-compose up -d` with `compose.yml` (registry and UI), or `podman-compose -f compose.ui.yml up -d` with `REGISTRY_URL` set for a registry that already runs. `docker compose` works the same way. Pin `UI_IMAGE` to a version or a digest in your `.env`.
 
+## Changes in 0.3.3
+
+### New Features
+
+- Settings, Show sizes in the tree (off by default, kept per viewer): the unique size of each folder and repository with a thin solid bar under the name, hidden when it would be a dot. With it off the tree looks as before 0.3.0 and the Storage row keeps its percentage ([#53](https://github.com/newen-systems/registry-lite-ui/pull/53))
+
+### Bug Fixes
+
+- Recent keeps at least the newest 100 events whatever their age, so a registry whose images are all older than `UI_MAX_EVENT_DAYS` no longer shows an empty Recent after a restart. Age pruning applies beyond that floor ([#53](https://github.com/newen-systems/registry-lite-ui/pull/53))
+- The Storage tab quick select no longer selects every tag when its placeholder is shown: the placeholder cannot be picked, a choice resets the menu so it can be made again, and only a positive number of days selects by age ([#53](https://github.com/newen-systems/registry-lite-ui/pull/53))
+
+### Chores
+
+- One way into Storage: the header button is gone, the tree row and the disk pill (now a link) remain. The Map and Table toggle uses the shared segmented control, the selection bar and tab bar reuse existing styles, and the Storage colours are tokens with dark-theme values ([#53](https://github.com/newen-systems/registry-lite-ui/pull/53))
+
 ## Changes in 0.3.2
 
 ### Bug Fixes

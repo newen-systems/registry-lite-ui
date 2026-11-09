@@ -8,7 +8,7 @@ let checked = null; // when the server last finished a walk of the registry
 
 // Preferences only, no data or secrets. Storage may be blocked, so every access is guarded.
 // expanded and selected are the tree state (node ids and the location hash), sidebar is its width in px.
-const DEFAULTS = { theme: "system", repoSort: "name", tagSort: "recent", packageSort: "name", live: true, refresh: 0, interval: 30, pageSize: 50, runtime: "podman", showEmpty: false, notify: false, tool: "pip", os: "linux", show: "all", sidebar: 280, selected: "/recent", expanded: [] };
+const DEFAULTS = { theme: "system", repoSort: "name", tagSort: "recent", packageSort: "name", live: true, refresh: 0, interval: 30, pageSize: 50, runtime: "podman", showEmpty: false, treeSizes: false, notify: false, tool: "pip", os: "linux", show: "all", sidebar: 280, selected: "/recent", expanded: [] };
 const CHOICES = { theme: ["system", "light", "dark"], repoSort: ["name", "recent"], tagSort: ["recent", "version"], packageSort: ["name", "recent"], runtime: ["podman", "docker"], tool: ["pip", "uv"], os: ["linux", "windows"], show: ["all", "containers", "helm", "python"], interval: [10, 30, 60, 300], refresh: [0, 10, 15, 30, 60], pageSize: [25, 50, 100, 200] };
 const MAX_EXPANDED = 500;
 const SIDEBAR = [180, 640];
@@ -448,12 +448,18 @@ function rowEl(r) {
     "aria-level": r.depth + 1, "aria-posinset": r.pos, "aria-setsize": r.count, "aria-selected": String(n.id === tree.sel),
   }, ...guides, el("span", { className: "chev" }, expandable(n) ? icon("chev") : null), iconFor(n, open), el("span", { className: "lbl", textContent: rowLabel(n) }));
   row.dataset.id = n.id;
-  const info = n.kind === "node" ? storage.paths.get(n.path) : null; // size and age of a folder or repository, with a thin bar against the largest
+  const info = prefs.treeSizes && n.kind === "node" ? storage.paths.get(n.path) : null; // size of a folder or repository, with a thin bar against the largest
   if (info && info.size > 0) {
-    row.append(el("span", { className: "nsz", title: "Unique size: bytes only this holds. A layer other repositories also use is not counted here, so the repository's Storage tab shows a larger total.", textContent: size(info.size) }));
-    const bar = el("span", { className: "nbar " + ageClass(info.oldest, Date.now() / 1000) });
-    bar.style.width = Math.max(2, Math.round((100 * info.size) / (storage.max || 1))) + "%";
-    row.append(bar);
+    const lbl = row.querySelector(".lbl"), wrap = el("span", { className: "lblwrap" });
+    lbl.replaceWith(wrap);
+    wrap.append(lbl);
+    const pct = Math.round((100 * info.size) / (storage.max || 1));
+    if (pct >= 3) { // below that the bar would be a dot
+      const bar = el("span", { className: "nbar" });
+      bar.style.width = pct + "%";
+      wrap.append(bar);
+    }
+    row.append(el("span", { className: "nsz", title: `${size(info.size)} only this ${n.repo ? "repository" : "folder"} holds. Layers other repositories also use are not counted here, so the Storage tab of a repository shows a larger total.`, textContent: size(info.size) }));
   }
   if (expandable(n)) row.setAttribute("aria-expanded", String(open));
   const t = tree.flashes.get(n.id);
@@ -475,7 +481,7 @@ let treeQueued = false;
 function scheduleTree() { if (!treeQueued) { treeQueued = true; requestAnimationFrame(() => { treeQueued = false; renderTree(); }); } }
 function rowSig(r) { // what a row looks like, so an unchanged one is reused
   const n = r.n;
-  const own = n ? [isOpen(n), n.kind === "node" && n.repo, n.id === tree.sel, n.id === tree.focus, rowLabel(n), expandable(n), n.kind === "tag" && tagKind(n), n.kind === "node" && storage.paths.has(n.path) && storage.paths.get(n.path).size + ":" + storage.max + ":" + ageClass(storage.paths.get(n.path).oldest, Math.floor(Date.now() / 1000))] : [];
+  const own = n ? [isOpen(n), n.kind === "node" && n.repo, n.id === tree.sel, n.id === tree.focus, rowLabel(n), expandable(n), n.kind === "tag" && tagKind(n), prefs.treeSizes && n.kind === "node" && storage.paths.has(n.path) && storage.paths.get(n.path).size + ":" + storage.max] : [];
   return [r.depth, r.anc.join(""), r.last, r.pos, r.count, ...own].join("|");
 }
 function cachedRow(r, keep) {
@@ -1506,7 +1512,7 @@ function storageTable(u, redraw) {
     return el("th", { "aria-sort": on ? (dir < 0 ? "descending" : "ascending") : "none" }, el("button", { type: "button", className: "thbtn", title: c.tip || "", "data-fk": "s:" + c.key,
       onclick: () => { storageUI.sort = on ? { key: c.key, dir: -dir } : { key: c.key, dir: c.key === "name" || c.key === "oldest" ? 1 : -1 }; redraw(); } }, c.key === "oldest" ? ageHead() === "Last pulled" ? c.label : "Oldest push" : c.label, on ? icon("arrow", dir < 0 ? "desc" : "") : null));
   });
-  return el("table", { className: "storagetable" }, el("thead", {}, el("tr", {}, ...head, el("th", {}))), el("tbody", {}, ...rows));
+  return el("table", { className: "sortable" }, el("thead", {}, el("tr", {}, ...head, el("th", {}))), el("tbody", {}, ...rows));
 }
 storageUI.gone = new Set();
 
@@ -1531,8 +1537,8 @@ async function storagePane(seq) {
   const redraw = () => keepFocus(holder, () => void body());
   const holder = el("div");
   const legend = el("span", { className: "legendrow" }, `${ageHead()}:`, ...(u.mount ? AGE_STEPS.map(([, text], i) => el("span", { className: "legend" }, el("i", { className: "sw a" + i }), text)) : [el("span", { className: "legend" }, el("i", { className: "sw a-none" }), "unknown, needs the storage mount")]));
-  const toggleBtn = (view, text) => el("button", { type: "button", className: "segbtn", "aria-pressed": String(storageUI.view === view), textContent: text, onclick: () => { storageUI.view = view; void paint(); } });
-  const bar = el("div", { className: "bar storagebar" });
+  const toggleBtn = (view, text) => el("button", { type: "button", "aria-pressed": String(storageUI.view === view), textContent: text, onclick: () => { storageUI.view = view; void paint(); } });
+  const bar = el("div", { className: "bar" });
   const body = () => {
     holder.replaceChildren(storageUI.view === "map" ? diskMap(u, nowSecs) : storageTable(u, redraw));
     return Promise.resolve();
@@ -1541,7 +1547,7 @@ async function storagePane(seq) {
   const paint = () => {
     foot.replaceChildren(storageUI.view === "map" ? "Click a block to open its repository and pick tags to delete. Area is unique bytes. A layer shared by two repositories counts in the namespace above them, in the strip under its name."
       : "Click a header to sort each level. Shared size is what a node uses that something outside it uses too.", sharedAll ? ` ${size(sharedAll.size)} is shared by several namespaces.` : "");
-    bar.replaceChildren(el("div", { role: "group", "aria-label": "View", className: "seg2" }, toggleBtn("map", "Map"), toggleBtn("table", "Table")), legend);
+    bar.replaceChildren(el("div", { role: "group", "aria-label": "View", className: "seg" }, toggleBtn("map", "Map"), toggleBtn("table", "Table")), legend);
     return body();
   };
   await paint();
@@ -1565,6 +1571,14 @@ function repoTabs(n, tab) {
   if (!cfg.usage) return [];
   const t = (label, href, on) => el("a", { role: "tab", href, "aria-selected": String(on), textContent: label });
   return [el("div", { className: "tabbar" }, el("div", { role: "tablist", className: "tabs" }, t("Tags", hashOf(n), tab === "tags"), t("Storage", repoHash(n.path), tab === "storage")))];
+}
+// The tags a quick-select choice picks: "none", "keep10", or a number of days not used. Null (nothing changes) for anything else.
+function quickSelect(value, rows, nowSecs) {
+  if (value === "none") return new Set();
+  if (value === "keep10") return allButNewest(rows, 10);
+  const days = Number(value);
+  if (value === "" || !Number.isFinite(days) || days <= 0) return null;
+  return new Set(rows.filter((t) => t.used && t.used[0] < nowSecs - days * 86400).map((t) => t.tag));
 }
 // The tags to delete to keep the `keep` newest images. The registry deletes by digest, so images are ranked and every tag of an old one is picked.
 function allButNewest(rows, keep) {
@@ -1602,16 +1616,18 @@ function repoStorage(n) {
   const sum = rows.reduce((a, t) => a + t.frees, 0) || 1, top = Math.max(1, ...rows.map((t) => t.frees)) / sum;
   const max = cfg.maxBatch || 100;
   const choose = el("select", { "aria-label": "Quick select", onchange: () => {
-    const v = choose.value;
-    st.picked = v === "none" ? new Set() : v === "keep10" ? allButNewest(rows, 10) : staleNames(Number(v));
+    const picked = quickSelect(choose.value, rows, Date.now() / 1000);
+    choose.selectedIndex = 0; // an action menu: the same choice can be made again
+    if (!picked) return;
+    st.picked = picked;
     draw();
-  } }, el("option", { value: "", textContent: "Choose..." }), ...STALE_OPTIONS.map(([v, text]) => el("option", { value: v, textContent: v === "180" || v === "90" || v === "30" ? text.replace("used", word) : text })));
+  } }, el("option", { value: "", disabled: true, selected: true, hidden: true, textContent: "Choose..." }), ...STALE_OPTIONS.map(([v, text]) => el("option", { value: v, textContent: v === "180" || v === "90" || v === "30" ? text.replace("used", word) : text })));
   const cols = [
     { key: "tag", label: "Tag", val: (t) => t.tag, cmp: tagCompare }, { key: "frees", label: "Frees", tip: "Bytes only this image holds, which garbage collection frees once it is deleted.", val: (t) => t.frees, cmp: numCmp },
     { key: "size", label: "Size", val: (t) => t.size, cmp: numCmp }, { key: "share", label: "Share of repo", tip: "This tag's frees against the frees of every tag in the repository.", val: (t) => t.frees, cmp: numCmp },
     { key: "used", label: ageHead(), tip: USED_TIP, val: (t) => t.used?.[0] ?? null, cmp: numCmp }, { key: "pushed", label: "Pushed", val: (t) => t.pushed ?? null, cmp: numCmp },
   ];
-  const holder = el("div", { className: "tablebox" }), sel = el("div", { className: "selbar" });
+  const holder = el("div"), sel = el("div", { className: "bar bulk selbar" });
   const draw = () => keepFocus(holder, paintRows);
   const paintRows = () => {
     const col = cols.find((c) => c.key === st.sort.key);
@@ -1630,11 +1646,11 @@ function repoStorage(n) {
       const bar = el("span", { className: "sbar" }, el("span", { className: "sfill" + (stale ? " old" : "") }));
       bar.firstChild.style.width = Math.round((100 * (t.frees / sum)) / top) + "%";
       bar.title = `${((100 * t.frees) / sum).toFixed(1)}% of what this repository's tags free`;
-      return el("tr", { className: on ? "on" : "" }, el("td", {}, b), el("td", {}, el("a", { href: `#/repo/${n.path}:${t.tag}`, textContent: t.tag })),
+      return el("tr", { className: on ? "pickable on" : "" }, el("td", {}, b), el("td", {}, el("a", { href: `#/repo/${n.path}:${t.tag}`, textContent: t.tag })),
         el("td", { className: "num", textContent: t.shares ? `0 B, shares ${t.shares}` : size(t.frees) }), el("td", { className: "mut num", textContent: size(t.size) }), el("td", {}, bar),
         usedCell(t.used), el("td", { className: "mut nw", title: t.pushed ? new Date(t.pushed * 1000).toLocaleString() : "", textContent: t.pushed ? ago(t.pushed) : "" }));
     };
-    holder.replaceChildren(el("table", { className: "storagetable" }, el("thead", {}, el("tr", {}, el("th", { className: "pick" }, all), ...head)), el("tbody", {}, ...list.map(tr))));
+    holder.replaceChildren(el("table", { className: "sortable" }, el("thead", {}, el("tr", {}, el("th", { className: "pick" }, all), ...head)), el("tbody", {}, ...list.map(tr))));
     const k = st.picked.size, f = freedBytes(d, st.picked);
     sel.hidden = !k;
     const go = el("button", { type: "button", className: "danger", textContent: cfg.binDays ? `Move ${plural(k, "tag")} to bin` : `Delete ${plural(k, "tag")}`, disabled: !canWrite() || k > max,
@@ -2365,7 +2381,7 @@ function helpPanel() {
 }
 
 // ---- Settings: one panel, changes apply as you make them ----------------------------------------------------------------
-const SETTING_KEYS = ["theme", "runtime", "tool", "os", "show", "repoSort", "tagSort", "packageSort", "live", "refresh", "interval", "pageSize", "showEmpty", "notify"];
+const SETTING_KEYS = ["theme", "runtime", "tool", "os", "show", "repoSort", "tagSort", "packageSort", "live", "refresh", "interval", "pageSize", "showEmpty", "treeSizes", "notify"];
 const SORT_KEYS = ["repoSort", "tagSort", "packageSort"];
 function segmented(labelId, options, key, apply) { // options: [value, text, iconName?]. Arrow keys move and select, like radio buttons.
   const box = el("div", { className: "seg", role: "radiogroup", "aria-labelledby": labelId });
@@ -2413,6 +2429,7 @@ function applyPrefs(change) { // save a change and do what it needs, at once
   if (prefs.live !== before.live || prefs.refresh !== before.refresh) startLive();
   if (prefs.interval !== before.interval) startPoll();
   if (prefs.showEmpty !== before.showEmpty || prefs.show !== before.show) { resetHidden(); renderTree(); drawTypes(); }
+  if (prefs.treeSizes !== before.treeSizes) renderTree();
   const sorted = SORT_KEYS.some((k) => prefs[k] !== before[k]);
   if (prefs.tagSort !== before.tagSort) for (const n of tree.byPath.values()) sortTags(n);
   if (sorted) renderTree(); // the tree follows the sorts too
@@ -2459,7 +2476,8 @@ function settings() {
         row("s-tsort", "Tags", "Order of a repository's tags. A push is when this UI saw it.", segmented("s-tsort", [["recent", "Recent push"], ["version", "Version"]], "tagSort", apply)),
         ...(cfg.pypi ? [row("s-psort", "Python packages", "Order of packages.", segmented("s-psort", [["name", "Name"], ["recent", "Recent"]], "packageSort", apply))] : []),
         row("s-rows", "Rows per page", "Rows a list shows before Show more.", selectEl("s-rows", "pageSize", CHOICES.pageSize, String, apply)),
-        row("s-empty", "Show empty repositories", "Repositories with no tags. The registry cannot delete them.", switchEl("s-empty", "showEmpty", apply))),
+        row("s-empty", "Show empty repositories", "Repositories with no tags. The registry cannot delete them.", switchEl("s-empty", "showEmpty", apply)),
+        ...(cfg.usage ? [row("s-sizes", "Show sizes in the tree", "The unique size of each folder and repository, with a bar against the largest.", switchEl("s-sizes", "treeSizes", apply))] : [])),
       section("Lifecycle", lifecycleRow()),
       section("Live updates", row("s-live", "Auto-refresh", "Update the tree and lists as the registry changes.", switchEl("s-live", "live", apply)), refreshRow, pollRow,
         row("s-notify", "Notify on push", canNotify() ? "A desktop notification for each push while this window is not in focus." : "Needs the page on HTTPS or localhost.", notifyCtl))),
@@ -2995,7 +3013,6 @@ setWidth(prefs.sidebar, false);
 for (const id of prefs.expanded) expanded.add(id);
 $("prefs").onclick = () => settings();
 $("help").onclick = () => helpPanel();
-$("storage").onclick = () => { location.hash = "#/storage"; };
 $("disk").onclick = () => { location.hash = "#/storage"; };
 $("bin").onclick = () => { location.hash = "#/bin"; };
 tree.root = { kind: "root", id: "root", name: "Registry", parent: null, kids: new Map(), sortedKids: null };
@@ -3003,7 +3020,7 @@ tree.byId.set("root", tree.root);
 tree.proot = { kind: "proot", id: "proot", name: "PyPI", parent: null, kids: [] };
 tree.byId.set("proot", tree.proot);
 tree.names = [];
-try { cfg = await api("/api/config"); $("reg").textContent = cfg.registry; $("ver").textContent = `v${cfg.version} · ${cfg.revision.slice(0, 7)}`; banner(notice()); $("storage").hidden = !cfg.usage; $("bin").hidden = !cfg.binDays; void binCount(); void loadStorage(true);
+try { cfg = await api("/api/config"); $("reg").textContent = cfg.registry; $("ver").textContent = `v${cfg.version} · ${cfg.revision.slice(0, 7)}`; banner(notice()); $("bin").hidden = !cfg.binDays; void binCount(); void loadStorage(true);
   if (cfg.login) $("who").replaceChildren(...(cfg.user ? [cfg.user, " ", el("a", { href: cfg.logout, textContent: "Log out", className: "btn" })] : [el("a", { href: cfg.login, textContent: "Log in", className: "btn" })]));
 }  catch (e) { banner(e.message, true); }
 expanded.add("root");
