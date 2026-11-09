@@ -336,7 +336,7 @@ def refuse_parents(parents, digest):
 def delete(c, repo, digest, with_children=False, bin=None):
     """Delete a manifest by digest. Refused (409) while a tagged index uses it as a child. With with_children, also
     delete index children no other tagged manifest in the repo uses. A bin (see bin.py) is told what goes, after the checks
-    and before the first DELETE, so the manifest can be put back; it forgets the record if the first DELETE fails."""
+    and before the first DELETE, so the manifest can be put back; it forgets the record if the first DELETE is refused."""
     check_repo(repo)
     if not DIGEST_RE.fullmatch(digest):
         raise RegistryError(400, "delete takes a digest")
@@ -354,8 +354,8 @@ def delete(c, repo, digest, with_children=False, bin=None):
         for d in gone:
             c.call("DELETE", f"/v2/{repo}/manifests/{d}", ok=(202,))
             removed += 1
-    except RegistryError:
-        if record and not removed:  # nothing went, so there is nothing to put back; a half-done delete keeps its record
+    except RegistryError as e:
+        if record and not removed and 400 <= e.status < 500:  # refused outright, so nothing to put back. A timeout may have gone through, and a half-done delete too: both keep the record
             bin.discard(record)
         raise
     return gone

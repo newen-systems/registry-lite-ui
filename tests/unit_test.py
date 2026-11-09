@@ -1837,7 +1837,7 @@ class UsageRetry(unittest.TestCase):
 class MemClient:
     """A registry in memory: tags, manifests and blobs, with the calls the bin makes."""
     def __init__(self):
-        self.tag_map, self.store, self.blobs, self.puts, self.fail_delete = {}, {}, set(), [], False
+        self.tag_map, self.store, self.blobs, self.puts, self.fail_delete = {}, {}, set(), [], 0
 
     def add(self, repo, body, mtype, tags=()):
         digest = R.hashed(body, "sha256:")
@@ -1863,7 +1863,7 @@ class MemClient:
         repo, _, ref = path[4:].partition("/manifests/")
         if method == "DELETE":
             if self.fail_delete:
-                raise R.RegistryError(500, "boom")
+                raise R.RegistryError(self.fail_delete, "boom")
             self.store.pop(ref, None)
             self.tag_map[repo] = {t: d for t, d in self.tag_map[repo].items() if d != ref}
         elif method == "PUT":
@@ -1949,11 +1949,47 @@ class RecycleBin(unittest.TestCase):
         with self.assertRaises(R.RegistryError):
             self.bin.restore(self.c, "gone")
 
-    def test_a_delete_that_fails_at_once_leaves_no_entry(self):
-        self.c.fail_delete = True
+    def test_a_refused_delete_leaves_no_entry_but_a_timeout_keeps_it(self):
+        self.c.fail_delete = 403
         with self.assertRaises(R.RegistryError):
             R.delete(self.c, "a/app", self.digest, bin=self.bin)
         self.assertEqual(self.bin.list(), [])
+        self.c.fail_delete = 502  # the registry may have processed it
+        with self.assertRaises(R.RegistryError):
+            R.delete(self.c, "a/app", self.digest, bin=self.bin)
+        self.assertEqual(len(self.bin.list()), 2)
+        self.c.fail_delete = 0
+        self.bin.restore(self.c, self.bin.list()[0]["id"])  # the tag is still there with the same digest: the push is harmless
+
+    def test_manifests_are_stored_once_per_digest_and_forgotten_with_their_last_entry(self):
+        R.delete(self.c, "a/app", self.digest, bin=self.bin)
+        self.assertEqual(list(self.state.binm), [self.digest])  # two tags, one stored manifest
+        one, other = [e["id"] for e in self.bin.list()]
+        self.bin.purge(one)
+        self.assertEqual(list(self.state.binm), [self.digest])
+        self.bin.purge(other)
+        self.assertEqual(self.state.binm, {})
+
+    def test_the_stored_manifests_are_capped_by_size_oldest_entry_first(self):
+        old = P.MAX_BIN_BYTES
+        self.addCleanup(setattr, P, "MAX_BIN_BYTES", old)
+        P.MAX_BIN_BYTES = 500
+        d1 = self.c.add("b", image_body(D("1")), IMG, ["x"])
+        d2 = self.c.add("b", image_body(D("1"), D("2")), IMG, ["y"])
+        R.delete(self.c, "b", d1, bin=self.bin)
+        self.clk.now += 1
+        R.delete(self.c, "b", d2, bin=self.bin)
+        self.assertEqual([e["tag"] for e in self.bin.list()], ["y"])  # the older one made room
+        self.assertEqual(list(self.state.binm), [d2])
+
+    def test_an_index_that_cannot_be_kept_whole_is_deleted_without_an_entry(self):
+        k1 = self.c.add("a/app", image_body(D("1")), IMG)
+        gone = "sha256:" + "9" * 64  # a child the registry cannot return
+        index = ('{"manifests":[{"digest":"%s"},{"digest":"%s"}]}' % (k1, gone)).encode()
+        top = self.c.add("a/app", index, IDX, ["broken"])
+        out = R.delete(self.c, "a/app", top, with_children=True, bin=self.bin)  # no KeyError, no refusal
+        self.assertIn(top, out)
+        self.assertEqual([e for e in self.bin.list() if e["tag"] == "broken"], [])
 
     def test_purge_and_empty_only_forget_entries(self):
         R.delete(self.c, "a/app", self.digest, bin=self.bin)
@@ -1986,11 +2022,17 @@ class RecycleBin(unittest.TestCase):
         st.save(force=True)
         again = B.Bin(P.State(path, clock=self.clk), 7, clock=self.clk)
         self.assertEqual(len(again.list()), 2)
-        doc = json.load(open(path))
+        with open(path) as f:
+            doc = json.load(f)
         doc["bin"].append({"id": "x", "repo": "../bad", "tag": "t"})
-        doc["bin"][0]["manifests"][self.digest]["b64"] = "!!not base64"
-        json.dump(doc, open(path, "w"))
-        self.assertEqual(len(B.Bin(P.State(path, clock=self.clk), 7, clock=self.clk).list()), 1)
+        doc["bin"].append({**doc["bin"][0], "id": "y", "kids": ["sha256:" + "8" * 64]})  # names a manifest that is not stored
+        with open(path, "w") as f:
+            json.dump(doc, f)
+        self.assertEqual(len(B.Bin(P.State(path, clock=self.clk), 7, clock=self.clk).list()), 2)
+        doc["binm"][self.digest]["b64"] = "!!not base64"
+        with open(path, "w") as f:
+            json.dump(doc, f)
+        self.assertEqual(len(B.Bin(P.State(path, clock=self.clk), 7, clock=self.clk).list()), 0)
 
     def test_bin_off_deletes_as_before_and_readonly_refuses_the_actions(self):
         self.assertIsNone(S.Config({"UI_BIN_DAYS": "0"}).bin)
