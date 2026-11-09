@@ -1091,13 +1091,16 @@ function childrenList(n) {
   });
 }
 
+const SEED_NOTE = { storage: "Already in the registry when the UI started. Pushed at this time, from the tag's file time in the registry storage.",
+  config: "Already in the registry when the UI started. This is when the image was built, from its config: the push may be later." };
 function recentPane() {
   // Container changes come from the poller's history; PyPI uploads carry GitLab's upload time. One list, newest first.
   const items = [];
   if (showsType("containers")) {
     for (const e of recent.events) if (tree.helm.has(repoOf(e.ref)) ? !noHelm() : !helmOnly()) items.push({ t: e.t, el: () => el("tr", {},
       el("td", { textContent: ago(e.t), title: new Date(e.t * 1000).toLocaleString() }),
-      el("td", {}, el("span", { className: "ico" }, icon("whale", "whale")), el("span", { className: "badge " + e.type, textContent: e.type })),
+      el("td", {}, el("span", { className: "ico" }, icon("whale", "whale")), el("span", { className: "badge " + e.type, textContent: e.type }),
+        ...(e.src ? [el("span", { className: "mut src", title: SEED_NOTE[e.src], textContent: ` ${e.src === "storage" ? "storage time" : "build time"}` })] : [])),
       el("td", {}, e.type === "deleted" ? code(e.ref) : el("a", { href: "#/repo/" + e.ref, textContent: e.ref })),
       el("td", {}, code(short(e.digest || e.prev)))) });
   }
@@ -1304,9 +1307,10 @@ async function renderPane(force) { // force: a setting changed under an open pan
 
 const canWrite = () => !cfg.readonly && (!cfg.login || cfg.user); // with an auth proxy, changes need a login
 function notice() {
-  if (cfg.readonly) return "Read-only mode.";
-  if (!canWrite()) return "Log in to copy, move or delete.";
-  return cfg.deleteEnabled !== false ? "" : "Deletion is disabled on this registry (REGISTRY_STORAGE_DELETE_ENABLED is not true). Move and Delete will fail.";
+  const memory = lastSeq !== null && !recent.persistent ? "Container history is kept in memory only (the state directory is not set or not writable), so it is rebuilt from storage times at every restart. Mount a volume at /state to keep it. " : "";
+  if (cfg.readonly) return memory + "Read-only mode.";
+  if (!canWrite()) return memory + "Log in to copy, move or delete.";
+  return memory + (cfg.deleteEnabled !== false ? "" : "Deletion is disabled on this registry (REGISTRY_STORAGE_DELETE_ENABLED is not true). Move and Delete will fail.");
 }
 
 // ---- Storage usage: last used times, the usage-over-time chart and the usage map --------------------------------------------
@@ -1682,8 +1686,9 @@ async function doSync() {
   const [rc, names] = await Promise.all([api("/api/recent"), api("/api/repos")]);
   const first = lastSeq === null;
   recent = rc;
-  const evs = first ? [] : rc.events.filter((e) => e.seq > lastSeq);
-  const gap = !first && rc.seq - lastSeq > evs.length; // history was pruned, so refresh everything open
+  const newer = first ? [] : rc.events.filter((e) => e.seq > lastSeq);
+  const evs = newer.filter((e) => !e.src); // tags the UI found at its start are not pushes
+  const gap = !first && rc.seq - lastSeq > newer.length; // history was pruned, so refresh everything open
   lastSeq = rc.seq;
   const grew = applyCatalog(names, !first);
   const touched = new Set(evs.map((e) => repoOf(e.ref)));

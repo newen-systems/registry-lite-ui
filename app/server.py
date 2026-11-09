@@ -47,7 +47,7 @@ DEFAULT_ENVIRONMENTS = "dev,test,uat,staging,prod"  # the lifecycle stages, in o
 MAX_ENVIRONMENTS = 12
 MAX_TAGNAMES = 5000  # tag names /api/tagnames returns, so the answer stays small on a very large registry
 MEDIA_TYPE_RE = re.compile(r"[a-z0-9][a-z0-9!#$&^_.+-]{0,126}/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}")
-CREATED_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})")  # RFC 3339, the form image config blobs use
+CREATED_RE = R.CREATED_RE
 MAX_BODY = 4096  # bytes of JSON accepted on a POST
 MAX_BATCH_BODY = 16384  # for /api/delete-tags: R.MAX_BATCH tag names of up to 128 characters
 HEALTHZ = "/healthz"
@@ -602,7 +602,7 @@ def main(env):
     if cert:
         # handshake in the worker thread, so a stalled client cannot block accept()
         httpd.socket = server_context(cert, key).wrap_socket(httpd.socket, server_side=True, do_handshake_on_connect=False)
-    cfg.poller = P.Poller(cfg.client, cfg.state, cfg.interval, cfg.max_tags, cfg.burst, cfg.burst_max, cfg.poll_min)
+    cfg.poller = P.Poller(cfg.client, cfg.state, cfg.interval, cfg.max_tags, cfg.burst, cfg.burst_max, cfg.poll_min, cfg.storage_mount)
     cfg.poller.start()
     if cfg.usage_interval:
         cfg.usage = U.Usage(cfg.client, cfg.state, cfg.storage_mount, cfg.usage_interval)

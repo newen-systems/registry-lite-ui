@@ -4,6 +4,13 @@ registry-lite-ui is a web UI for a plain `registry:2` that browses, copies, move
 
 `podman-compose up -d` with `compose.yml` (registry and UI), or `podman-compose -f compose.ui.yml up -d` with `REGISTRY_URL` set for a registry that already runs. `docker compose` works the same way. Pin `UI_IMAGE` to a version or a digest in your `.env`.
 
+## Changes in 0.2.31
+
+### Bug Fixes
+
+- Recent lists container images again after a start. Tags found by the first walk of the registry were dropped, so with no saved history (no `/state` volume, or one that is not writable) Recent showed only PyPI uploads. Each is now an event with a real time: the tag's file time in the registry storage when `UI_REGISTRY_STORAGE_MOUNT` is set, else the image's build time from its config, else it is left out. Such events say "storage time" or "build time", and a start that loads a saved history adds none ([#49](https://github.com/newen-systems/registry-lite-ui/pull/49))
+- A banner says container history is in memory only when the state directory is not set or not writable ([#49](https://github.com/newen-systems/registry-lite-ui/pull/49))
+
 ## Changes in 0.2.30
 
 ### New Features
