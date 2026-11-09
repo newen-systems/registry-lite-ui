@@ -10,6 +10,7 @@ from collections import deque
 
 import registry as R
 import usage as U
+import bin as B
 
 log = logging.getLogger("poller")
 MAX_STATE_BYTES = 8 << 20  # a state file over this is neither written nor read
@@ -35,7 +36,7 @@ def well_formed(data):
             and num(data.get("since")) and isinstance(data.get("tags"), dict) and isinstance(data.get("events"), list)
             and all(isinstance(k, str) and isinstance(v, dict) and isinstance(v.get("digest"), str)
                     and num(v.get("changed")) and num(v.get("first")) for k, v in data["tags"].items())
-            and isinstance(data.get("meta", {}), dict) and isinstance(data.get("usage", []), list)
+            and isinstance(data.get("meta", {}), dict) and isinstance(data.get("usage", []), list) and isinstance(data.get("bin", []), list)
             and all(isinstance(k, str) and isinstance(v, dict) and isinstance(v.get("index"), bool) and v.get("kind") in KINDS
                     for k, v in data.get("meta", {}).items())
             and all(isinstance(e, dict) and isinstance(e.get("ref"), str) and num(e.get("t")) and isinstance(e.get("seq"), int)
@@ -68,6 +69,7 @@ class State:
         self.path, self.max_events, self.max_age, self.save_every, self.clock = path, max_events, max_age, save_every, clock
         self.tags, self.events, self.seq, self.baselined = {}, deque(), 0, False
         self.meta = {}  # digest to {"index": bool, "kind": image|helm|artifact}, read once per digest, which never changes
+        self.bin, self.bin_days = [], 0  # recycle bin entries (bin.py), and the retention in days, 0 while the bin is off
         self.usage = []  # history points from usage.history_point, thinned by usage.thin
         self.empty = set()  # repositories a full walk found with no tags. In memory only, so unknown again after a restart.
         self.since = clock()
@@ -96,6 +98,7 @@ class State:
                     self.seq += 1
                     self.events.append({**e, "seq": self.seq})
             self.prune(now)
+            self.bin_entries(now)  # drops what has expired
             if len(self.meta) > 2 * len(self.tags) + 1000:  # digests of deleted tags, once there are many
                 keep = {v["digest"] for v in self.tags.values()}
                 self.meta = {d: v for d, v in self.meta.items() if d in keep}
@@ -117,6 +120,28 @@ class State:
         """What is known about a manifest digest, or {}."""
         with self.cond:
             return dict(self.meta.get(digest, {}))
+
+    def bin_entries(self, now):
+        """The entries still inside the retention, oldest first. Expired ones are dropped here."""
+        with self.cond:
+            if self.bin_days:
+                kept = B.expired(self.bin, now, self.bin_days)
+                if len(kept) != len(self.bin):
+                    self.bin, self.dirty = kept, True
+            return list(self.bin)
+
+    def bin_add(self, entries, now):
+        with self.cond:
+            self.bin = B.expired([*self.bin, *entries], now, self.bin_days or 1)
+            self.dirty = True
+
+    def bin_remove(self, ids):
+        """Drop the entries with these ids, or all of them for None. Returns how many went."""
+        with self.cond:
+            before = len(self.bin)
+            self.bin = [] if ids is None else [e for e in self.bin if e["id"] not in ids]
+            self.dirty = self.dirty or len(self.bin) != before
+            return before - len(self.bin)
 
     def add_usage(self, point, now):
         with self.cond:
@@ -152,7 +177,7 @@ class State:
 
     def dump(self):
         return json.dumps({"v": 1, "since": self.since, "baselined": self.baselined, "seq": self.seq,
-                           "tags": self.tags, "meta": self.meta, "usage": self.usage, "events": list(self.events)}, sort_keys=True, separators=(",", ":"))
+                           "tags": self.tags, "meta": self.meta, "usage": self.usage, "bin": self.bin, "events": list(self.events)}, sort_keys=True, separators=(",", ":"))
 
     def save(self, force=False, wait=-1):
         """Write the state atomically, only if it changed and not more often than save_every.
@@ -211,6 +236,7 @@ class State:
                 raise ValueError("unexpected structure")
             self.tags, self.seq, self.baselined = data["tags"], data["seq"], data["baselined"]
             self.meta = data.get("meta", {})
+            self.bin = [e for e in data.get("bin", []) if B.entry_shape(e)]
             self.usage = [p for p in data.get("usage", []) if isinstance(p, dict) and isinstance(p.get("t"), (int, float)) and isinstance(p.get("total"), int)
                           and isinstance(p.get("repos", {}), dict)]
             self.since = data["since"]
@@ -221,7 +247,7 @@ class State:
             pass
         except (ValueError, KeyError, TypeError, OSError) as e:
             log.warning("ignoring unreadable state file: %s", e)
-            self.tags, self.events, self.seq, self.baselined, self.meta, self.usage = {}, deque(), 0, False, {}, []
+            self.tags, self.events, self.seq, self.baselined, self.meta, self.usage, self.bin = {}, deque(), 0, False, {}, [], []
 
 
 class Poller(threading.Thread):

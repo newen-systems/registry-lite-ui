@@ -22,6 +22,7 @@ import gitlab as G
 import pypi as Y
 import registry as R
 import usage as U
+import bin as B
 
 log = logging.getLogger("ui")
 
@@ -105,6 +106,10 @@ class Config:
         if self.usage_interval < 0:
             raise ValueError("UI_USAGE_INTERVAL must be 0 or more seconds")
         self.usage_interval = 0 if not self.usage_interval else max(60, self.usage_interval)
+        bin_days = n("UI_BIN_DAYS", 7)  # days a deleted tag can be restored, 0 deletes at once as before
+        if bin_days < 0:
+            raise ValueError("UI_BIN_DAYS must be 0 or more days")
+        self.bin = B.Bin(self.state, bin_days) if bin_days else None
         self.poller = self.usage = None
         self.errors = P.Throttle(logger=log)
         self.pypi = Y.Source(env) if env.get("PYPI_INDEX_URL") or env.get("GITLAB_URL") else None  # the optional PyPI source
@@ -283,13 +288,13 @@ def routes(cfg):
         return run
 
     def delete(b):
-        out = {"deleted": R.delete(c, str(b["repo"]), str(b["digest"]), b.get("children", False) is True)}
+        out = {"deleted": R.delete(c, str(b["repo"]), str(b["digest"]), b.get("children", False) is True, cfg.bin)}
         if cfg.poller:
             cfg.poller.wake()
         return out
 
     def delete_tags(b):
-        out = {"results": R.delete_tags(c, str(b["repo"]), b["tags"], b.get("children", False) is True)}
+        out = {"results": R.delete_tags(c, str(b["repo"]), b["tags"], b.get("children", False) is True, cfg.bin)}
         if cfg.poller:
             cfg.poller.wake()
         return out
@@ -310,11 +315,24 @@ def routes(cfg):
         snap = cfg.usage.snapshot() if cfg.usage and cfg.storage_mount else None
         return {"updated": snap["updated"] if snap else None, "tags": snap["ages"].get(R.check_repo(one(q, "repo")), {}) if snap else {}}
 
+    def bin_view(q):
+        return {"days": cfg.bin.days if cfg.bin else 0, "entries": cfg.bin.list() if cfg.bin else []}
+
+    def in_bin(fn):  # a bin action: the poller is woken so a restored tag shows at once
+        def run(b):
+            if not cfg.bin:
+                raise R.RegistryError(404, "the bin is off (UI_BIN_DAYS=0)")
+            out = fn(cfg.bin, b)
+            if cfg.poller:
+                cfg.poller.wake()
+            return out
+        return run
+
     get = {
         "/api/config": lambda q: {"csrf": cfg.csrf, "readonly": cfg.readonly, "deleteEnabled": delete_enabled(),
                                   "registry": cfg.registry_url,
                                   "registryHost": cfg.registry_host or urllib.parse.urlsplit(cfg.registry_url).netloc,
-                                  "registryHostSet": bool(cfg.registry_host), "environments": cfg.environments, "registryStorage": cfg.registry_storage, "registryService": cfg.registry_service, "storageMount": bool(cfg.storage_mount), "usage": bool(cfg.usage_interval),
+                                  "registryHostSet": bool(cfg.registry_host), "environments": cfg.environments, "registryStorage": cfg.registry_storage, "registryService": cfg.registry_service, "storageMount": bool(cfg.storage_mount), "usage": bool(cfg.usage_interval), "binDays": cfg.bin.days if cfg.bin else 0,
                                   "version": cfg.version, "revision": cfg.revision, "login": cfg.login_url, "logout": cfg.logout_url, "maxBatch": R.MAX_BATCH, "pollInterval": cfg.interval, "pollMin": cfg.poll_min,
                                   "pypi": cfg.pypi.config() if cfg.pypi else None},
         "/api/repos": lambda q: sorted(c.catalog()),
@@ -323,15 +341,19 @@ def routes(cfg):
         "/api/tagnames": tagnames,
         "/api/parents": parents,
         "/api/usage": usage,
+        "/api/bin": bin_view,
         "/api/ages": ages,
         "/api/history": lambda q: R.tag_history(cfg.storage_mount, one(q, "repo"), one(q, "tag")),  # [] without the storage
         "/api/manifest": lambda q: view_manifest(c, one(q, "repo"), one(q, "ref"), q.get("tags", ["1"])[0] != "0", cfg.storage_mount),
     }
     post = {
         "/api/copy": woken(lambda *a: {"digest": R.copy(c, *a)}),
-        "/api/move": woken(lambda *a: {"deleted": R.move(c, *a)}),
+        "/api/move": woken(lambda *a: {"deleted": R.move(c, *a, bin=cfg.bin)}),
         "/api/delete": delete,
         "/api/delete-tags": delete_tags,
+        "/api/bin/restore": in_bin(lambda bin_, b: bin_.restore(c, str(b["id"]))),
+        "/api/bin/delete": in_bin(lambda bin_, b: bin_.purge(str(b["id"])) or {"deleted": 1}),
+        "/api/bin/empty": in_bin(lambda bin_, b: {"deleted": bin_.empty()}),
     }
     if cfg.pypi:
         y = cfg.pypi

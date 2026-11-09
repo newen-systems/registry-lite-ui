@@ -47,6 +47,7 @@ services:
       UI_POLL_BURST_MAX: "${UI_POLL_BURST_MAX:-600}"
       UI_POLL_MIN: "${UI_POLL_MIN:-10}"
       UI_USAGE_INTERVAL: "${UI_USAGE_INTERVAL:-3600}"
+      UI_BIN_DAYS: "${UI_BIN_DAYS:-7}"
       UI_STATE_DIR: /state
       UI_MAX_EVENTS: "${UI_MAX_EVENTS:-1000}"
     volumes: [ui-state:/state, registry-data:/registry:ro]

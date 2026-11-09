@@ -377,6 +377,7 @@ function ensurePlats(t) {
 }
 // After our own change, reload what it touched now instead of waiting for the poller's event.
 async function touch(...paths) {
+  void binCount();
   await sync();
   await Promise.all(paths.map((p) => { const n = tree.byPath.get(p); dropManifests(p); return n?.repo ? ensureTags(Object.assign(n, { fresh: false }), true) : null; }));
 }
@@ -389,7 +390,8 @@ function dropManifests(path) {
 // ---- Tree rendering ----------------------------------------------------------------------------------------------
 const RECENT = { kind: "recent", id: "recent", name: "Recent" };
 const USAGE = { kind: "usage", id: "usage", name: "Usage" };
-const PSEUDO = { recent: RECENT, usage: USAGE }; // views with a header link or a first tree row, not a node in the tree
+const BIN = { kind: "bin", id: "bin", name: "Bin" };
+const PSEUDO = { recent: RECENT, usage: USAGE, bin: BIN }; // views with a header link or a first tree row, not a node in the tree
 let rows = []; // visible entries, in order
 function visible() {
   rows = [];
@@ -499,6 +501,7 @@ function select(id, reveal) {
 function hashOf(n) {
   if (n.kind === "recent") return "#/recent";
   if (n.kind === "usage") return "#/usage";
+  if (n.kind === "bin") return "#/bin";
   if (n.kind === "proot") return "#/pypi";
   if (n.kind === "pkg") return "#/pypi/" + n.key;
   if (n.kind === "ver") return `#/pypi/${n.parent.key}@${n.version}`;
@@ -1281,6 +1284,7 @@ async function drawPane(n, seq) {
   if (!n) return notFoundPane();
   if (n === RECENT) return recentPane();
   if (n === USAGE) return usagePane(seq);
+  if (n === BIN) return binPane(seq);
   if (n.kind === "root") return rootPane(n);
   if (n.kind === "proot") return prootPane(n);
   if (n.kind === "pkg") return pkgPane(n);
@@ -1510,6 +1514,52 @@ async function usagePane(seq) {
     ...chartSection(u), ...(u.tree && u.tree.kids.length ? mapSection(u) : []));
 }
 
+// ---- Recycle bin: a delete keeps the manifest in the state file, so Restore can push it back ------------------------------------
+const binNote = () => (cfg.binDays ? `The tag goes to the Bin and can be restored for ${plural(cfg.binDays, "day")}. ` : "");
+async function binCount() { // the number on the header button
+  if (!cfg.binDays) return;
+  try {
+    const n = (await api("/api/bin")).entries.length;
+    $("bin").textContent = n ? `Bin (${n})` : "Bin";
+  } catch (e) { /* the button keeps its label */ }
+}
+async function binPane(seq) {
+  const b = await api("/api/bin");
+  if (seq !== paneSeq) return;
+  $("bin").textContent = b.entries.length ? `Bin (${b.entries.length})` : "Bin";
+  const write = canWrite();
+  const left = (e) => { const d = Math.max(0, Math.ceil((e.expires - Date.now() / 1000) / 86400)); return d <= 1 ? "under 1 day" : `${d} days`; };
+  const act = async (e, path, text) => { // Restore and Delete forever act on one entry
+    banner("");
+    try { await api(path, { id: e.id }); } catch (err) { banner(err.message, true); void renderPane(); return false; }
+    return true;
+  };
+  const restore = async (e) => {
+    if (!(await act(e, "/api/bin/restore"))) return;
+    await touch(e.repo);
+    location.hash = `#/repo/${e.repo}:${e.tag}`;
+  };
+  const forget = async (e) => {
+    if (!(await ask("Delete forever", [`Remove ${e.repo}:${e.tag} from the Bin? It can no longer be restored. Disk space is freed by garbage collection.`], [], true))) return;
+    if (await act(e, "/api/bin/delete")) void renderPane();
+  };
+  const row = (e) => el("tr", {}, el("td", {}, code(`${e.repo}:${e.tag}`)), el("td", { className: "nw" }, code(short(e.digest))), el("td", { textContent: size(e.size) }),
+    el("td", { className: "mut", title: new Date(e.t * 1000).toLocaleString(), textContent: ago(e.t) }), el("td", { className: "mut", textContent: left(e) }),
+    ...(write ? [el("td", { className: "nw" }, el("button", { type: "button", textContent: "Restore", onclick: () => void restore(e) }), " ",
+      el("button", { type: "button", className: "danger", textContent: "Delete forever", onclick: () => void forget(e) }))] : []));
+  const empty = async () => {
+    if (!(await ask("Empty the Bin", [`Remove all ${plural(b.entries.length, "entry", "entries")} from the Bin? None of them can be restored afterwards.`], [], true))) return;
+    try { await api("/api/bin/empty", {}); } catch (err) { banner(err.message, true); }
+    void renderPane();
+  };
+  showMain(el("h2", {}, el("span", { className: "ico" }, icon("box")), "Bin"),
+    el("p", { className: "mut", textContent: `A deleted tag stays here for ${plural(b.days, "day")}. Restore pushes the same manifest back to its tag, once every layer is still in the registry. `
+      + "Layers are freed only by garbage collection, which does not know about the Bin: run it after emptying the Bin, or Restore fails for the images it freed. Delete forever and Empty only forget the entry." }),
+    ...(write && b.entries.length ? [el("div", { className: "bar" }, el("button", { type: "button", className: "danger", textContent: "Empty bin", onclick: () => void empty() }))] : []),
+    b.entries.length ? el("table", {}, el("thead", {}, el("tr", {}, ...["Image", "Digest", "Size", "Deleted", "Expires in", ...(write ? [""] : [])].map((h) => el("th", { textContent: h })))), el("tbody", {}, ...b.entries.map(row)))
+      : el("p", { className: "mut", textContent: "The Bin is empty." }));
+}
+
 // ---- Routing: #/ (registry), #/recent, #/dir/<path>, #/repo/<name>[:<tag>[@<digest>]] ---------------------------------------
 function parseHash() {
   let h = "/";
@@ -1517,6 +1567,7 @@ function parseHash() {
   const m = /^\/(?:repo|dir)\/([^:@]+)(?::([^@]+))?(?:@(.+))?$/.exec(h);
   if (h === "/recent") return { kind: "recent" };
   if (h === "/usage") return { kind: "usage" };
+  if (h === "/bin") return { kind: "bin" };
   if (h === "/pypi") return { kind: "proot" };
   const py = /^\/pypi\/([^@]+)(?:@(.+))?$/.exec(h);
   if (py) return { kind: "pypi", key: py[1].toLowerCase().replace(/[-_.]+/g, "-"), version: py[2] };
@@ -1526,6 +1577,7 @@ let navSeq = 0;
 async function resolve(r) {
   if (r.kind === "recent") return RECENT;
   if (r.kind === "usage") return cfg.usage ? USAGE : tree.root;
+  if (r.kind === "bin") return cfg.binDays ? BIN : tree.root;
   if (r.kind === "root") return tree.root;
   if (r.kind === "proot") return cfg.pypi ? tree.proot : null;
   if (r.kind === "pypi") {
@@ -1807,7 +1859,7 @@ function confirmDeleteTags(n, picked) {
         el("div", { className: "xlabel", textContent: "Selected tags" }), chipsOf(picked.map((t) => t.tag)),
         ...(anyIndex ? [el("div", { className: "srow" }, switchLabel(sw, el("div", { className: "slabel", id: "b-sw", textContent: "Also delete platform images" }),
           el("div", { className: "sdesc", textContent: "For each selected index, the children that no other tag in this repository uses." })), el("div", { className: "sctl" }, sw))] : []),
-        el("p", { className: "mut", textContent: "A tag whose manifest a tagged index uses as a platform is refused and reported, as a single delete is. Disk space is freed by garbage collection, not by this action." })),
+        el("p", { className: "mut", textContent: "A tag whose manifest a tagged index uses as a platform is refused and reported, as a single delete is. " + binNote() + "Disk space is freed by garbage collection, not by this action." })),
       el("div", { className: "sfoot" }, cancel, go));
     dlg.addEventListener("click", (e) => { if (e.target === dlg) dlg.close(); });
     dlg.addEventListener("close", () => { dlg.remove(); resolve(result); });
@@ -1873,7 +1925,7 @@ function confirmDelete(o) {
         el("div", { className: "tagchips" }, ...(m.tags.length ? m.tags.map((t) => el("span", { className: "tagchip", textContent: t })) : [el("span", { className: "mut", textContent: "none, this digest has no tag" })])),
         ...(isIndex ? [el("div", { className: "srow" }, switchLabel(sw, el("div", { className: "slabel", id: "d-sw", textContent: "Also delete platform images" }),
           el("div", { className: "sdesc", textContent: removable ? `Index children that no other tag in this repository uses. ${removable} of ${o.info.children} would be removed.` : "Every child is used by another tag in this repository, so none would be removed." })), el("div", { className: "sctl" }, sw))] : []),
-        el("p", { className: "mut", textContent: "Disk space is freed by garbage collection, not by this action." }), script),
+        el("p", { className: "mut", textContent: binNote() + "Disk space is freed by garbage collection, not by this action." }), script),
       el("div", { className: "sfoot" }, el("button", { type: "button", textContent: "Cancel", onclick: () => dlg.close() }), go));
     dlg.addEventListener("click", (e) => { if (e.target === dlg) dlg.close(); });
     dlg.addEventListener("close", () => { dlg.remove(); resolve(result); });
@@ -2145,6 +2197,7 @@ function gcSection() {
       el("p", { textContent: "Garbage collection frees disk space from deleted images. It runs on the host, not from this page." }),
       el("div", { className: "segs" }, form, seg),
       el("ol", { className: "steps" }, ...gcSteps(tool, storage)),
+      ...(cfg.binDays ? [el("p", { className: "mut", textContent: "Deleted tags wait in the Bin. Their layers stay in the registry until this runs, so run it after emptying the Bin: a layer it frees can no longer be restored." })] : []),
       el("p", { className: "mut", textContent: "Never add --delete-untagged: it deletes the child manifests of multi-arch images and breaks them." }),
       el("p", { className: "slabel", textContent: "Remove an empty repository (registry stopped)" }),
       el("p", { className: "mut", textContent: "The registry API cannot delete a repository, and garbage collection leaves its empty directory behind. With the registry stopped, remove the directory yourself:" }),
@@ -2806,12 +2859,13 @@ for (const id of prefs.expanded) expanded.add(id);
 $("prefs").onclick = () => settings();
 $("help").onclick = () => helpPanel();
 $("usage").onclick = () => { location.hash = "#/usage"; };
+$("bin").onclick = () => { location.hash = "#/bin"; };
 tree.root = { kind: "root", id: "root", name: "Registry", parent: null, kids: new Map(), sortedKids: null };
 tree.byId.set("root", tree.root);
 tree.proot = { kind: "proot", id: "proot", name: "PyPI", parent: null, kids: [] };
 tree.byId.set("proot", tree.proot);
 tree.names = [];
-try { cfg = await api("/api/config"); $("reg").textContent = cfg.registry; $("ver").textContent = `v${cfg.version} · ${cfg.revision.slice(0, 7)}`; banner(notice()); $("usage").hidden = !cfg.usage;
+try { cfg = await api("/api/config"); $("reg").textContent = cfg.registry; $("ver").textContent = `v${cfg.version} · ${cfg.revision.slice(0, 7)}`; banner(notice()); $("usage").hidden = !cfg.usage; $("bin").hidden = !cfg.binDays; void binCount();
   if (cfg.login) $("who").replaceChildren(...(cfg.user ? [cfg.user, " ", el("a", { href: cfg.logout, textContent: "Log out", className: "btn" })] : [el("a", { href: cfg.login, textContent: "Log in", className: "btn" })]));
 }  catch (e) { banner(e.message, true); }
 expanded.add("root");
