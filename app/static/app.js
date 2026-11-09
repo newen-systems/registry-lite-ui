@@ -450,7 +450,7 @@ function rowEl(r) {
   row.dataset.id = n.id;
   const info = n.kind === "node" ? storage.paths.get(n.path) : null; // size and age of a folder or repository, with a thin bar against the largest
   if (info && info.size > 0) {
-    row.append(el("span", { className: "nsz", textContent: size(info.size) }));
+    row.append(el("span", { className: "nsz", title: "Unique size: bytes only this holds. A layer other repositories also use is not counted here, so the repository's Storage tab shows a larger total.", textContent: size(info.size) }));
     const bar = el("span", { className: "nbar " + ageClass(info.oldest, Date.now() / 1000) });
     bar.style.width = Math.max(2, Math.round((100 * info.size) / (storage.max || 1))) + "%";
     row.append(bar);
@@ -1595,8 +1595,8 @@ function repoStorage(n) {
   const staleFrees = freedBytes(d, staleNames(180));
   const word = ageWord();
   const src = u?.atime === true ? "last access (atime)" : u?.atime === false ? "push time (access time not recorded)" : "unknown, needs the storage mount";
-  const cards = el("div", { className: "cards" }, card("Repository size", `${size(node?.held ?? rows.reduce((a, t) => a + t.size, 0))}, ${plural(rows.length, "tag")}`),
-    card("Layers only this repo uses", size(node?.size ?? 0)),
+  const cards = el("div", { className: "cards" }, card("Repository size, shared layers included", `${size(node?.held ?? rows.reduce((a, t) => a + t.size, 0))}, ${plural(rows.length, "tag")}`),
+    card("Unique size, layers only this repo uses (the tree)", size(node?.size ?? 0)),
     card(`Not ${word} in 180 days`, el("span", { className: staleNames(180).size ? "warnfg" : "", textContent: `${plural(staleNames(180).size, "tag")}, frees ${size(staleFrees.bytes)}` })),
     card("Age source", src));
   const sum = rows.reduce((a, t) => a + t.frees, 0) || 1, top = Math.max(1, ...rows.map((t) => t.frees)) / sum;
