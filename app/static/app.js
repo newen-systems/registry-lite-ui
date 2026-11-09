@@ -1516,9 +1516,19 @@ const MAP_W = 1000, MAP_H = 480, MIN_BLOCK = 0.02;
 const typeWord = (t) => (t === "helm" ? "chart" : t === "artifact" ? "artifact" : "");
 // by: "total" sizes a block by every byte it uses, shared layers included (so a repository whose layers are all shared still has a block, and
 // the "shared" blocks, which would count those layers twice, are left out), "frees" by the bytes only it holds, which deleting it frees.
+// What a block is sized by, which blocks are drawn, and their sum, which is the figure the line above the map gives.
+function blockWeight(by) {
+  return by === "total" ? (k) => k.held : (k) => k.size;
+}
+function mapKids(node, by) {
+  return node.kids.filter((k) => by === "frees" || k.kind !== "shared");
+}
+function mapSum(node, by) {
+  return mapKids(node, by).reduce((a, k) => a + blockWeight(by)(k), 0);
+}
 function diskMap(u, node, nowSecs, onShared, onOther, by = "total") {
-  const weight = by === "total" ? (k) => k.held : (k) => k.size;
-  const shown = node.kids.filter((k) => by === "frees" || k.kind !== "shared");
+  const weight = blockWeight(by);
+  const shown = mapKids(node, by);
   const kids = groupSmall(shown, shown.reduce((a, k) => a + weight(k), 0), MIN_BLOCK, weight), boxes = squarify(kids.map(weight), MAP_W, MAP_H);
   const box = el("div", { className: "dmap" });
   kids.forEach((k, i) => {
@@ -1634,7 +1644,7 @@ async function storagePane(seq) {
   const pypi = cfg.pypi && !cfg.pypi.locked ? [el("p", { className: "mut", textContent: "Python packages are stored in GitLab, not on this registry's disk, so they are not counted here." })] : [];
   const hollow = node.kids.filter((k) => k.size === 0 && k.tags > 0).length;
   const here = [...(hollow && storageUI.view === "map" && prefs.mapBy === "frees" ? [el("p", { className: "mut", textContent: `${plural(hollow, "item")} here ${hollow === 1 ? "holds" : "hold"} no bytes of their own (every layer is shared), so this map has no block for ${hollow === 1 ? "it" : "them"}. Size by Total shows ${hollow === 1 ? "it" : "them"}, and so does the table.` })] : []),
-    ...(shownPath ? [el("p", { className: "mut" }, `${size(prefs.mapBy === "total" ? node.held : node.size)} ${prefs.mapBy === "total" ? "total" : "unique"} in ${plural(node.tags, "tag")} under ${shownPath}. `, ...(node.kind === "repo" ? [el("a", { href: repoHash(node.repo), textContent: "Open the repository" })] : []))] : [])];
+    ...(shownPath ? [el("p", { className: "mut" }, `${size(mapSum(node, prefs.mapBy))} ${prefs.mapBy === "total" ? "in the blocks, a layer several share counted in each" : "unique"}, ${plural(node.tags, "tag")} under ${shownPath}. `, ...(node.kind === "repo" ? [el("a", { href: repoHash(node.repo), textContent: "Open the repository" })] : []))] : [])];
   showMain(crumbNav(regLabel(), [{ text: "Storage", href: "#/storage" }, ...pathCrumbs(shownPath, "#/storage")]),
     el("div", { className: "storagehead" }, el("h2", { textContent: "Storage" }),
       el("span", { className: "mut", textContent: `${size(u.total)} in ${plural(u.tags, "tag")} across ${plural(repos.length, "repository", "repositories")}. Sizes count each layer once. Scanned ${ago(u.updated)}.${note}` })),

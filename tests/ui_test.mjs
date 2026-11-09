@@ -180,3 +180,18 @@ test("sizing by total keeps a block for a repository whose layers are all shared
   assert.deepEqual(groupSmall(kids, 155, 0.02, (x) => x.held).map((x) => x.name), ["api", "team-b", "maven"]);
   assert.deepEqual(groupSmall(kids, 50, 0.02).map((x) => x.name), ["api"]); // by frees they have nothing to draw
 });
+
+test("the line above the map is the sum of the blocks drawn, under Total and under Frees", () => {
+  const blockWeight = load("blockWeight");
+  const mapKids = loadWith("mapKids", {});
+  const mapSum = loadWith("mapSum", { blockWeight, mapKids });
+  const groupSmall = load("groupSmall");
+  const k = (name, kind, size, held) => ({ name, kind, size, held, tags: 1, oldest: null, kids: [] });
+  const node = { kids: [k("team-a", "folder", 100, 150), k("team-b", "folder", 0, 280), k("s", "shared", 50, 50), k("tiny", "folder", 1, 2)] };
+  assert.equal(mapSum(node, "total"), 150 + 280 + 2); // the shared block would count its layers twice, so it is not drawn
+  assert.equal(mapSum(node, "frees"), 100 + 0 + 50 + 1);
+  for (const by of ["total", "frees"]) { // grouping small blocks into one keeps the sum
+    const w = blockWeight(by), drawn = groupSmall(mapKids(node, by), mapSum(node, by), 0.02, w);
+    assert.equal(drawn.reduce((a, x) => a + w(x), 0), mapSum(node, by), by);
+  }
+});
