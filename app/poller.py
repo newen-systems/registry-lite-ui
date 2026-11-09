@@ -68,8 +68,9 @@ class Throttle:
 
 class State:
     """Current tag to digest map plus the last `max_events` events no older than `max_age` seconds."""
-    def __init__(self, path=None, max_events=1000, max_age=30 * 86400, save_every=30, clock=time.time):
+    def __init__(self, path=None, max_events=1000, max_age=30 * 86400, save_every=30, clock=time.time, keep=100):
         self.path, self.max_events, self.max_age, self.save_every, self.clock = path, max_events, max_age, save_every, clock
+        self.keep = min(keep, max_events)  # the newest events are kept whatever their age, so Recent is never empty while tags exist
         self.tags, self.events, self.seq, self.baselined = {}, deque(), 0, False
         self.meta = {}  # digest to {"index": bool, "kind": image|helm|artifact}, read once per digest, which never changes
         self.bin, self.binm, self.bin_days = [], {}, 0  # recycle bin entries (bin.py), and the retention in days, 0 while the bin is off
@@ -186,7 +187,7 @@ class State:
             self.baselined, self.dirty = True, True
 
     def prune(self, now):
-        while len(self.events) > self.max_events or (self.events and now - self.events[0]["t"] > self.max_age):
+        while len(self.events) > self.max_events or (len(self.events) > self.keep and now - self.events[0]["t"] > self.max_age):
             self.events.popleft()
 
     def wait(self, seq, timeout):
