@@ -9,6 +9,7 @@ import time
 from collections import deque
 
 import registry as R
+import usage as U
 
 log = logging.getLogger("poller")
 MAX_STATE_BYTES = 8 << 20  # a state file over this is neither written nor read
@@ -34,7 +35,7 @@ def well_formed(data):
             and num(data.get("since")) and isinstance(data.get("tags"), dict) and isinstance(data.get("events"), list)
             and all(isinstance(k, str) and isinstance(v, dict) and isinstance(v.get("digest"), str)
                     and num(v.get("changed")) and num(v.get("first")) for k, v in data["tags"].items())
-            and isinstance(data.get("meta", {}), dict)
+            and isinstance(data.get("meta", {}), dict) and isinstance(data.get("usage", []), list)
             and all(isinstance(k, str) and isinstance(v, dict) and isinstance(v.get("index"), bool) and v.get("kind") in KINDS
                     for k, v in data.get("meta", {}).items())
             and all(isinstance(e, dict) and isinstance(e.get("ref"), str) and num(e.get("t")) and isinstance(e.get("seq"), int)
@@ -67,6 +68,7 @@ class State:
         self.path, self.max_events, self.max_age, self.save_every, self.clock = path, max_events, max_age, save_every, clock
         self.tags, self.events, self.seq, self.baselined = {}, deque(), 0, False
         self.meta = {}  # digest to {"index": bool, "kind": image|helm|artifact}, read once per digest, which never changes
+        self.usage = []  # history points from usage.history_point, thinned by usage.thin
         self.empty = set()  # repositories a full walk found with no tags. In memory only, so unknown again after a restart.
         self.since = clock()
         self.cond = threading.Condition()
@@ -116,6 +118,15 @@ class State:
         with self.cond:
             return dict(self.meta.get(digest, {}))
 
+    def add_usage(self, point, now):
+        with self.cond:
+            self.usage = U.thin([*self.usage, point], now)
+            self.dirty = True
+
+    def usage_history(self):
+        with self.cond:
+            return list(self.usage)
+
     def mark_baselined(self):
         with self.cond:
             self.baselined, self.dirty = True, True
@@ -141,7 +152,7 @@ class State:
 
     def dump(self):
         return json.dumps({"v": 1, "since": self.since, "baselined": self.baselined, "seq": self.seq,
-                           "tags": self.tags, "meta": self.meta, "events": list(self.events)}, sort_keys=True, separators=(",", ":"))
+                           "tags": self.tags, "meta": self.meta, "usage": self.usage, "events": list(self.events)}, sort_keys=True, separators=(",", ":"))
 
     def save(self, force=False, wait=-1):
         """Write the state atomically, only if it changed and not more often than save_every.
@@ -200,6 +211,8 @@ class State:
                 raise ValueError("unexpected structure")
             self.tags, self.seq, self.baselined = data["tags"], data["seq"], data["baselined"]
             self.meta = data.get("meta", {})
+            self.usage = [p for p in data.get("usage", []) if isinstance(p, dict) and isinstance(p.get("t"), (int, float)) and isinstance(p.get("total"), int)
+                          and isinstance(p.get("repos", {}), dict)]
             self.since = data["since"]
             self.events = deque(data["events"])
             self.prune(self.clock())
@@ -208,7 +221,7 @@ class State:
             pass
         except (ValueError, KeyError, TypeError, OSError) as e:
             log.warning("ignoring unreadable state file: %s", e)
-            self.tags, self.events, self.seq, self.baselined, self.meta = {}, deque(), 0, False, {}
+            self.tags, self.events, self.seq, self.baselined, self.meta, self.usage = {}, deque(), 0, False, {}, []
 
 
 class Poller(threading.Thread):

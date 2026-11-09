@@ -21,6 +21,7 @@ import poller as P
 import gitlab as G
 import pypi as Y
 import registry as R
+import usage as U
 
 log = logging.getLogger("ui")
 
@@ -80,7 +81,7 @@ class Config:
             raise ValueError("UI_REGISTRY_SERVICE must be a compose service name such as registry")
         self.storage_mount = env.get("UI_REGISTRY_STORAGE_MOUNT", "").strip() or None  # the registry's storage root, mounted read-only
         if self.storage_mount and not os.path.isdir(self.storage_mount):
-            log.warning("UI_REGISTRY_STORAGE_MOUNT %s is not a directory: layer push times and tag history are off", self.storage_mount)
+            log.warning("UI_REGISTRY_STORAGE_MOUNT %s is not a directory: layer push times, last used times, tag history and the on-disk total are off", self.storage_mount)
             self.storage_mount = None
         self.registry_host = env.get("UI_REGISTRY_HOST", "").strip()  # what clients type to reach the registry, shown in the pull and push commands
         if self.registry_host and not HOST_RE.fullmatch(self.registry_host):
@@ -100,7 +101,11 @@ class Config:
             state_dir = None
         self.state = P.State(os.path.join(state_dir, "state.json") if state_dir else None, n("UI_MAX_EVENTS", 1000),
                              n("UI_MAX_EVENT_DAYS", 30) * 86400)
-        self.poller = None
+        self.usage_interval = n("UI_USAGE_INTERVAL", U.HOUR)  # seconds between storage scans, 0 turns them off
+        if self.usage_interval < 0:
+            raise ValueError("UI_USAGE_INTERVAL must be 0 or more seconds")
+        self.usage_interval = 0 if not self.usage_interval else max(60, self.usage_interval)
+        self.poller = self.usage = None
         self.errors = P.Throttle(logger=log)
         self.pypi = Y.Source(env) if env.get("PYPI_INDEX_URL") or env.get("GITLAB_URL") else None  # the optional PyPI source
 
@@ -142,6 +147,7 @@ def view_manifest(c, repo, ref, with_tags=True, storage=None):
     if storage:  # when each layer was pushed, from the registry's own files mounted read-only
         for layer in out["layers"]:
             layer["pushed"] = R.blob_pushed(storage, layer["digest"])
+            layer["used"] = U.blob_age(storage, layer["digest"])  # [seconds, atime|mtime|created]
     if "config" in m:
         out["config"] = R.check_digest(m["config"].get("digest"))
         ctype = m["config"].get("mediaType")
@@ -295,11 +301,20 @@ def routes(cfg):
         except R.RegistryError:
             return None
 
+    def usage(q):
+        snap = cfg.usage.snapshot() if cfg.usage else None
+        keep = ("updated", "mount", "total", "disk", "files", "tags", "blobs", "tree")
+        return {"interval": cfg.usage_interval, "history": cfg.state.usage_history(), **({k: snap[k] for k in keep} if snap else {"updated": None})}
+
+    def ages(q):  # when each tag of a repository was last used, from the latest storage scan
+        snap = cfg.usage.snapshot() if cfg.usage and cfg.storage_mount else None
+        return {"updated": snap["updated"] if snap else None, "tags": snap["ages"].get(R.check_repo(one(q, "repo")), {}) if snap else {}}
+
     get = {
         "/api/config": lambda q: {"csrf": cfg.csrf, "readonly": cfg.readonly, "deleteEnabled": delete_enabled(),
                                   "registry": cfg.registry_url,
                                   "registryHost": cfg.registry_host or urllib.parse.urlsplit(cfg.registry_url).netloc,
-                                  "registryHostSet": bool(cfg.registry_host), "environments": cfg.environments, "registryStorage": cfg.registry_storage, "registryService": cfg.registry_service, "storageMount": bool(cfg.storage_mount),
+                                  "registryHostSet": bool(cfg.registry_host), "environments": cfg.environments, "registryStorage": cfg.registry_storage, "registryService": cfg.registry_service, "storageMount": bool(cfg.storage_mount), "usage": bool(cfg.usage_interval),
                                   "version": cfg.version, "revision": cfg.revision, "login": cfg.login_url, "logout": cfg.logout_url, "maxBatch": R.MAX_BATCH, "pollInterval": cfg.interval, "pollMin": cfg.poll_min,
                                   "pypi": cfg.pypi.config() if cfg.pypi else None},
         "/api/repos": lambda q: sorted(c.catalog()),
@@ -307,6 +322,8 @@ def routes(cfg):
         "/api/recent": recent,
         "/api/tagnames": tagnames,
         "/api/parents": parents,
+        "/api/usage": usage,
+        "/api/ages": ages,
         "/api/history": lambda q: R.tag_history(cfg.storage_mount, one(q, "repo"), one(q, "tag")),  # [] without the storage
         "/api/manifest": lambda q: view_manifest(c, one(q, "repo"), one(q, "ref"), q.get("tags", ["1"])[0] != "0", cfg.storage_mount),
     }
@@ -565,6 +582,9 @@ def main(env):
         httpd.socket = server_context(cert, key).wrap_socket(httpd.socket, server_side=True, do_handshake_on_connect=False)
     cfg.poller = P.Poller(cfg.client, cfg.state, cfg.interval, cfg.max_tags, cfg.burst, cfg.burst_max, cfg.poll_min)
     cfg.poller.start()
+    if cfg.usage_interval:
+        cfg.usage = U.Usage(cfg.client, cfg.state, cfg.storage_mount, cfg.usage_interval)
+        cfg.usage.start()
     if cfg.pypi:
         cfg.pypi.poller.start()
         log.info("PyPI source: GitLab %s, %s %s", cfg.pypi.client.url, cfg.pypi.kind, cfg.pypi.ref)

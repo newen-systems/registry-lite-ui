@@ -15,6 +15,7 @@ import urllib.parse
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
 import poller as P  # noqa: E402
+import usage as U  # noqa: E402
 import registry as R  # noqa: E402
 import server as S  # noqa: E402
 import gitlab as G  # noqa: E402
@@ -1585,7 +1586,7 @@ class Storage(unittest.TestCase):
         cfg.client.delete_enabled = lambda: True
         get = S.routes(cfg)[0]
         m = get["/api/manifest"]({"repo": ["a/app"], "ref": [D("b")], "tags": ["0"]})
-        self.assertEqual(m["layers"], [{"digest": D("2"), "size": None, "pushed": 1000}])
+        self.assertEqual(m["layers"], [{"digest": D("2"), "size": None, "pushed": 1000, "used": [1000, "mtime"]}])
         self.assertEqual(len(get["/api/history"]({"repo": ["a/app"], "tag": ["latest"]})), 2)
         self.assertTrue(get["/api/config"]({})["storageMount"])
 
@@ -1597,3 +1598,236 @@ class Storage(unittest.TestCase):
         get = S.routes(cfg)[0]
         self.assertNotIn("pushed", get["/api/manifest"]({"repo": ["a/app"], "ref": [D("b")], "tags": ["0"]})["layers"][0])
         self.assertEqual(get["/api/history"]({"repo": ["a/app"], "tag": ["latest"]}), [])
+
+
+class UsageAges(unittest.TestCase):
+    def test_atime_wins_only_when_newer_than_mtime(self):
+        self.assertEqual(U.pick_age(5000, 3000, 1000), (5000, "atime"))
+        self.assertEqual(U.pick_age(3000, 3000, 1000), (3000, "mtime"))  # relatime never read it, or noatime froze it
+        self.assertEqual(U.pick_age(2000, 3000), (3000, "mtime"))
+        self.assertEqual(U.pick_age(0, 0, 1000), (1000, "created"))
+        self.assertEqual(U.pick_age(0, 3000, 1000), (3000, "mtime"))  # a birth time is the last resort
+        self.assertEqual(U.pick_age(5000, 0), (5000, "atime"))
+        self.assertIsNone(U.pick_age(0, 0))
+
+    def test_newest_of_two_and_none(self):
+        self.assertEqual(U.newest((5, "mtime"), (9, "atime")), (9, "atime"))
+        self.assertEqual(U.newest((9, "mtime"), (9, "atime")), (9, "atime"))  # a tie keeps the better source
+        self.assertEqual(U.newest(None, (1, "mtime")), (1, "mtime"))
+        self.assertIsNone(U.newest(None, None))
+
+    def test_blob_age_reads_the_file_times(self):
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root)
+        path = U.blob_path(root, D("2"))
+        os.makedirs(os.path.dirname(path))
+        open(path, "w").write("x")
+        os.utime(path, (9000, 3000))
+        self.assertEqual(U.blob_age(root, D("2")), [9000, "atime"])
+        os.utime(path, (3000, 3000))
+        self.assertEqual(U.blob_age(root, D("2")), [3000, "mtime"])
+        self.assertIsNone(U.blob_age(root, D("9")))
+        self.assertIsNone(U.blob_age(None, D("2")))
+        self.assertIsNone(U.blob_age(root, "sha256:../../x"))
+        self.assertEqual(U.disk_total(root), (1, 1))
+
+
+def blobs(**kw):
+    return {D(k): v for k, v in kw.items()}
+
+
+class UsageMap(unittest.TestCase):
+    TAGS = {"a/x:1": D("1"), "a/x:latest": D("1"), "a/y:1": D("2"), "b:1": D("3")}
+    # blob s is used by every digest, p only by the two digests in namespace a
+    BLOBS = {D("1"): blobs(m1=10, s=50, p=20, own1=100), D("2"): blobs(m2=10, s=50, p=20, own2=7), D("3"): blobs(m3=10, s=50, own3=1)}
+
+    def run_map(self, ages=None):
+        return U.analyse(self.TAGS, self.BLOBS, ages)
+
+    def test_a_shared_blob_counts_once_at_the_level_that_holds_it(self):
+        r = self.run_map()
+        top = r["tree"]
+        self.assertEqual(r["total"], 10 + 50 + 20 + 100 + 10 + 7 + 10 + 1)  # unique bytes, s and p once
+        self.assertEqual(top["size"], r["total"])
+        by = {k["name"]: k for k in top["kids"]}
+        self.assertEqual(by["shared by namespaces"]["size"], 50)  # s: three repositories in two namespaces
+        self.assertEqual(by["a"]["size"], 10 + 20 + 100 + 10 + 7)
+        shared_in_a = [k for k in by["a"]["kids"] if k["name"].startswith("shared by repositories")]
+        self.assertEqual([k["size"] for k in shared_in_a], [20])  # p: two repositories of a
+        self.assertEqual(by["(top level)"]["size"], 11)
+
+    def test_every_node_is_the_sum_of_its_kids(self):
+        def check(n):
+            if n["kids"]:
+                self.assertEqual(n["size"], sum(k["size"] for k in n["kids"]), n["name"])
+                for k in n["kids"]:
+                    check(k)
+        check(self.run_map()["tree"])
+
+    def test_tags_on_one_digest_are_one_leaf(self):
+        x = next(k for k in next(k for k in self.run_map()["tree"]["kids"] if k["name"] == "a")["kids"] if k["name"] == "a/x")
+        self.assertEqual([(k["name"], k["tag"], k["size"]) for k in x["kids"]], [("1, latest", "1", 110)])
+
+    def test_blobs_shared_by_two_digests_of_a_repository_sit_at_the_repository(self):
+        tags = {"r:1": D("1"), "r:2": D("2")}
+        r = U.analyse(tags, {D("1"): blobs(a=5, base=40), D("2"): blobs(b=6, base=40)})
+        (repo,) = [k for k in r["tree"]["kids"] if k["name"] == "(top level)"][0]["kids"]
+        self.assertEqual(repo["size"], 51)
+        self.assertEqual(sorted((k["name"], k["size"]) for k in repo["kids"]), [("1", 5), ("2", 6), ("shared by tags of r", 40)])
+        self.assertEqual(r["repos"], {"r": 51})
+
+    def test_repository_bytes_count_shared_layers_in_each_repository(self):
+        self.assertEqual(self.run_map()["repos"], {"a/x": 180, "a/y": 87, "b": 61})
+
+    def test_age_is_the_newest_blob_and_marks_stale_nodes(self):
+        ages = {D("own1"): (900, "atime"), D("own2"): (100, "mtime"), D("s"): (500, "mtime"), D("p"): (100, "mtime")}
+        r = self.run_map(ages)
+        self.assertEqual(r["ages"]["a/x"], {"1": [900, "atime"], "latest": [900, "atime"]})
+        self.assertEqual(r["ages"]["a/y"], {"1": [500, "mtime"]})  # its base layer was used more recently than its own
+        self.assertEqual(r["tree"]["used"], [900, "atime"])
+        self.assertEqual(self.run_map()["ages"], {})  # no storage, no ages
+        self.assertIsNone(self.run_map()["tree"]["used"])
+
+    def test_many_tags_fold_into_other(self):
+        tags = {f"r:{i}": D(format(i, "x")) for i in range(1, 8)}
+        r = U.analyse(tags, {D(format(i, "x")): blobs(**{f"u{i}": i}) for i in range(1, 8)})
+        repo = r["tree"]["kids"][0]["kids"][0]
+        self.assertEqual(len(U.folded(repo["kids"], 3)), 3)
+        last = U.folded(repo["kids"], 3)[-1]
+        self.assertEqual((last["name"], last["size"]), ("other (5)", 1 + 2 + 3 + 4 + 5))
+        self.assertEqual(U.folded(repo["kids"], 7), repo["kids"])
+
+    def test_manifest_blobs_and_children_are_followed(self):
+        index = ('{"manifests":[{"digest":"%s"},{"digest":"nope"}]}' % D("b")).encode()
+        image = ('{"config":{"digest":"%s","size":3},"layers":[{"digest":"%s","size":9},{"digest":"%s"},"x"]}' % (D("1"), D("2"), D("3"))).encode()
+        store = {D("a"): index, D("b"): image}
+
+        def read(d):
+            if d not in store:
+                raise R.RegistryError(404, "gone")
+            return store[d]
+        got, layers = U.blobs_of(read, D("a"))
+        self.assertEqual(got, {D("a"): len(index), D("b"): len(image), D("1"): 3, D("2"): 9, D("3"): 0})
+        self.assertEqual(layers, {D("2"), D("3")})  # the config and the manifests are not layers
+        self.assertEqual(U.blobs_of(read, D("c")), ({}, set()))  # unreadable counts as nothing
+        self.assertEqual(U.blobs_of(lambda d: b"[1]", D("a")), ({}, set()))
+
+
+class UsageHistory(unittest.TestCase):
+    def pts(self, *times):
+        return [{"t": t, "total": i, "disk": None, "repos": {}} for i, t in enumerate(times)]
+
+    def test_thin_keeps_hourly_for_a_week_then_one_per_day(self):
+        now = 100 * U.DAY
+        week = [now - h * U.HOUR for h in range(0, 24 * 7, 1)]  # 168 hourly points inside the week
+        old = [now - 10 * U.DAY + h * U.HOUR for h in range(24)] + [now - 20 * U.DAY + h * U.HOUR for h in range(24)]
+        out = U.thin(self.pts(*week, *old), now)
+        self.assertEqual(len([p for p in out if now - p["t"] <= 7 * U.DAY]), 168)
+        older = [p for p in out if now - p["t"] > 7 * U.DAY]
+        self.assertEqual(len(older), 2)  # one for each of the two days
+        self.assertEqual(sorted(p["t"] for p in older), [now - 20 * U.DAY + 23 * U.HOUR, now - 10 * U.DAY + 23 * U.HOUR])  # the last of its day
+        self.assertEqual(out, sorted(out, key=lambda p: p["t"]))
+        self.assertEqual(U.thin(out, now), out)  # thinning twice changes nothing
+
+    def test_thin_drops_what_is_past_the_keep_window(self):
+        now = 200 * U.DAY
+        out = U.thin(self.pts(now - 91 * U.DAY, now - 89 * U.DAY, now - 1), now)
+        self.assertEqual(len(out), 2)
+
+    def test_history_point_keeps_the_largest_repositories(self):
+        repos = {f"r{i}": i for i in range(50)}
+        p = U.history_point(12.7, 99, None, repos)
+        self.assertEqual((p["t"], p["total"], len(p["repos"])), (12, 99, U.TOP_REPOS))
+        self.assertIn("r49", p["repos"])
+        self.assertNotIn("r0", p["repos"])
+
+    def test_state_keeps_and_saves_the_history(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d)
+        path = os.path.join(d, "state.json")
+        clk = Clock()
+        s = P.State(path, clock=clk)
+        s.add_usage(U.history_point(clk.now, 5, 7, {"a": 5}), clk.now)
+        s.save(force=True)
+        t = P.State(path, clock=Clock())
+        self.assertEqual(t.usage_history(), [{"t": 1000, "total": 5, "disk": 7, "repos": {"a": 5}}])
+        self.assertEqual(P.State(clock=Clock()).usage_history(), [])
+
+    def test_an_old_state_file_without_history_and_a_bad_history_still_load(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d)
+        path = os.path.join(d, "state.json")
+        s = P.State(path, clock=Clock())
+        s.update({"a"}, {"a:1": "d1"})
+        s.mark_baselined()
+        s.save(force=True)
+        doc = json.load(open(path))
+        doc.pop("usage")
+        json.dump(doc, open(path, "w"))
+        self.assertEqual(P.State(path, clock=Clock()).tags, {"a:1": {"digest": "d1", "first": 1000.0, "changed": 1000.0}})
+        doc["usage"] = [{"t": 1, "total": 2, "repos": {}}, "junk", {"t": "x"}]
+        json.dump(doc, open(path, "w"))
+        self.assertEqual(len(P.State(path, clock=Clock()).usage_history()), 1)
+        doc["usage"] = "junk"
+        json.dump(doc, open(path, "w"))
+        self.assertEqual(P.State(path, clock=Clock()).tags, {})  # a wrong shape is the same as any unreadable file
+
+
+class UsageScan(unittest.TestCase):
+    def test_scan_reads_manifests_from_the_storage_and_records_a_point(self):
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root)
+        image = ('{"config":{"digest":"%s","size":3},"layers":[{"digest":"%s","size":40}]}' % (D("1"), D("2"))).encode()
+        digest = R.hashed(image, "sha256:")
+        for dg, body, when in ((digest, image, (9999, 100)), (D("1"), b"abc", (9999, 50)), (D("2"), b"x" * 40, (800, 100))):
+            path = U.blob_path(root, dg)
+            os.makedirs(os.path.dirname(path))
+            with open(path, "wb") as f:
+                f.write(body)
+            os.utime(path, when)
+        clk = Clock()
+        st = P.State(clock=clk)
+        st.update({"a/x"}, {"a/x:1": digest})
+        st.mark_baselined()
+        u = U.Usage(object(), st, root, clock=clk)  # no client: every manifest comes from the storage
+        out = u.scan()
+        self.assertEqual((out["total"], out["disk"], out["files"], out["blobs"]), (len(image) + 43, len(image) + 43, 3, 3))
+        self.assertEqual(out["ages"], {"a/x": {"1": [800, "atime"]}})  # the read of the manifest and config (9999) does not count
+        (point,) = st.usage_history()
+        self.assertEqual((point["total"], point["repos"]), (len(image) + 43, {"a/x": len(image) + 43}))
+        self.assertIs(u.snapshot(), out)
+
+    def test_scan_without_storage_reads_over_the_api(self):
+        image = b'{"config":{"digest":"%s","size":3},"layers":[]}' % D("1").encode()
+        seen = []
+
+        class Client:
+            def manifest(self, repo, ref, head=False):
+                seen.append((repo, ref))
+                return image, "", ref
+        st = P.State(clock=Clock())
+        st.update({"a"}, {"a:1": D("a"), "a:2": D("a")})
+        u = U.Usage(Client(), st, None, clock=Clock())
+        out = u.scan()
+        self.assertEqual((out["total"], out["disk"], out["ages"], out["mount"]), (len(image) + 3, None, {}, False))
+        self.assertEqual(seen, [("a", D("a"))])  # one read for two tags on a digest
+        u.scan()
+        self.assertEqual(len(seen), 1)  # a digest never changes, so it is not read again
+
+
+class UsageRetry(unittest.TestCase):
+    def test_a_failed_manifest_read_is_tried_again_next_scan(self):
+        image = b'{"config":{"digest":"%s","size":3},"layers":[]}' % D("1").encode()
+        up = [False]
+
+        class Client:
+            def manifest(self, repo, ref, head=False):
+                if not up[0]:
+                    raise R.RegistryError(502, "down")
+                return image, "", ref
+        st = P.State(clock=Clock())
+        st.update({"a"}, {"a:1": D("a")})
+        u = U.Usage(Client(), st, None, clock=Clock())
+        self.assertEqual(u.scan()["total"], 0)
+        up[0] = True
+        self.assertEqual(u.scan()["total"], len(image) + 3)

@@ -305,3 +305,32 @@ menu { display:flex; gap:var(--s2); justify-content:flex-end; padding:0; margin:
 .segs { display:flex; gap:var(--s2); flex-wrap:wrap; }
 tr.pick { cursor:pointer; } tr.pick[aria-selected=true] > td { background:var(--acc-soft); }
 .copydetail { margin-top:var(--s4); } .upload > div { margin-top:var(--s4); }
+
+/* Storage usage: the chart, the map and the age colours. light-dark() follows the colour-scheme the theme sets above. */
+.src { font-size:11px; opacity:.8; }
+.chart, .treemap { display:block; width:100%; height:auto; max-width:960px; margin:var(--s3) 0; }
+.chart .grid { stroke:var(--line); stroke-width:1; }
+.chart .axis { fill:var(--mut); font-size:12px; }
+.chart .line { fill:none; stroke-width:2; stroke-linejoin:round; } .chart .dot { stroke:none; }
+.chart .line.s-total { stroke-width:3; }
+.chart .line.s-disk { stroke-dasharray:6 4; }
+.s-total { stroke:var(--fg); fill:var(--fg); background:var(--fg); } .s-disk { stroke:var(--mut); fill:var(--mut); background:var(--mut); }
+.s-c0 { stroke:light-dark(#d9480f, #ff922b); fill:light-dark(#d9480f, #ff922b); background:light-dark(#d9480f, #ff922b); }
+.s-c1 { stroke:light-dark(#2b8a3e, #51cf66); fill:light-dark(#2b8a3e, #51cf66); background:light-dark(#2b8a3e, #51cf66); }
+.s-c2 { stroke:light-dark(#7048e8, #b197fc); fill:light-dark(#7048e8, #b197fc); background:light-dark(#7048e8, #b197fc); }
+.s-c3 { stroke:light-dark(#c2255c, #f783ac); fill:light-dark(#c2255c, #f783ac); background:light-dark(#c2255c, #f783ac); }
+.s-c4 { stroke:light-dark(#0b7285, #3bc9db); fill:light-dark(#0b7285, #3bc9db); background:light-dark(#0b7285, #3bc9db); }
+.legendrow { display:flex; flex-wrap:wrap; gap:var(--s1) var(--s4); align-items:center; margin:var(--s2) 0; }
+.legend { display:inline-flex; align-items:center; gap:6px; font-size:12.5px; }
+.sw { display:inline-block; width:12px; height:12px; border-radius:3px; border:1px solid var(--line2); }
+.a0 { --age:light-dark(#bfe3c8, #1f5230); } .a1 { --age:light-dark(#dbeac0, #3d5420); } .a2 { --age:light-dark(#f5e6a0, #61501a); }
+.a3 { --age:light-dark(#f7c28a, #75441a); } .a4 { --age:light-dark(#ef9a93, #86302a); } .a-none { --age:light-dark(#dde2ea, #2a3340); }
+.sw:is(.a0, .a1, .a2, .a3, .a4, .a-none) { background:var(--age); }
+.sw.s-total, .sw.s-disk, .sw[class*="s-c"] { border:0; }
+.treemap .tile rect { fill:var(--age); stroke:var(--panel); stroke-width:2; }
+.treemap .tile text { fill:var(--fg); font-size:13px; font-weight:600; pointer-events:none; }
+.treemap .tile text.sz { font-weight:400; fill:var(--mut); }
+.treemap .tile.go { cursor:pointer; }
+.treemap .tile.go:hover rect { stroke:var(--fg); }
+.treemap .tile:focus-visible { outline:none; } .treemap .tile:focus-visible rect { stroke:var(--focus); stroke-width:4; }
+.usagetable { max-width:960px; }
