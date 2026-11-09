@@ -1645,18 +1645,6 @@ class UsageMap(unittest.TestCase):
     def run_map(self, ages=None):
         return U.analyse(self.TAGS, self.BLOBS, ages)
 
-    def test_a_shared_blob_counts_once_at_the_level_that_holds_it(self):
-        r = self.run_map()
-        top = r["tree"]
-        self.assertEqual(r["total"], 10 + 50 + 20 + 100 + 10 + 7 + 10 + 1)  # unique bytes, s and p once
-        self.assertEqual(top["size"], r["total"])
-        by = {k["name"]: k for k in top["kids"]}
-        self.assertEqual(by["shared by namespaces"]["size"], 50)  # s: three repositories in two namespaces
-        self.assertEqual(by["a"]["size"], 10 + 20 + 100 + 10 + 7)
-        shared_in_a = [k for k in by["a"]["kids"] if k["name"].startswith("shared by repositories")]
-        self.assertEqual([k["size"] for k in shared_in_a], [20])  # p: two repositories of a
-        self.assertEqual(by["(top level)"]["size"], 11)
-
     def test_every_node_is_the_sum_of_its_kids(self):
         def check(n):
             if n["kids"]:
@@ -1664,18 +1652,6 @@ class UsageMap(unittest.TestCase):
                 for k in n["kids"]:
                     check(k)
         check(self.run_map()["tree"])
-
-    def test_tags_on_one_digest_are_one_leaf(self):
-        x = next(k for k in next(k for k in self.run_map()["tree"]["kids"] if k["name"] == "a")["kids"] if k["name"] == "a/x")
-        self.assertEqual([(k["name"], k["tag"], k["size"]) for k in x["kids"]], [("1, latest", "1", 110)])
-
-    def test_blobs_shared_by_two_digests_of_a_repository_sit_at_the_repository(self):
-        tags = {"r:1": D("1"), "r:2": D("2")}
-        r = U.analyse(tags, {D("1"): blobs(a=5, base=40), D("2"): blobs(b=6, base=40)})
-        (repo,) = [k for k in r["tree"]["kids"] if k["name"] == "(top level)"][0]["kids"]
-        self.assertEqual(repo["size"], 51)
-        self.assertEqual(sorted((k["name"], k["size"]) for k in repo["kids"]), [("1", 5), ("2", 6), ("shared by tags of r", 40)])
-        self.assertEqual(r["repos"], {"r": 51})
 
     def test_repository_bytes_count_shared_layers_in_each_repository(self):
         self.assertEqual(self.run_map()["repos"], {"a/x": 180, "a/y": 87, "b": 61})
@@ -1689,15 +1665,6 @@ class UsageMap(unittest.TestCase):
         self.assertEqual(r["tree"]["used"], [900, "atime"])
         self.assertEqual(self.run_map()["ages"], {})  # no storage, no ages
         self.assertIsNone(self.run_map()["tree"]["used"])
-
-    def test_many_tags_fold_into_other(self):
-        tags = {f"r:{i}": D(format(i, "x")) for i in range(1, 8)}
-        r = U.analyse(tags, {D(format(i, "x")): blobs(**{f"u{i}": i}) for i in range(1, 8)})
-        repo = r["tree"]["kids"][0]["kids"][0]
-        self.assertEqual(len(U.folded(repo["kids"], 3)), 3)
-        last = U.folded(repo["kids"], 3)[-1]
-        self.assertEqual((last["name"], last["size"]), ("other (5)", 1 + 2 + 3 + 4 + 5))
-        self.assertEqual(U.folded(repo["kids"], 7), repo["kids"])
 
     def test_manifest_blobs_and_children_are_followed(self):
         index = ('{"manifests":[{"digest":"%s"},{"digest":"nope"}]}' % D("b")).encode()
@@ -1719,24 +1686,6 @@ class StorageView(unittest.TestCase):
     TAGS = UsageMap.TAGS
     BLOBS = UsageMap.BLOBS
     AGES = {D("own1"): (900, "atime"), D("own2"): (100, "mtime"), D("s"): (500, "mtime"), D("p"): (100, "mtime"), D("own3"): (300, "mtime")}
-
-    def test_nodes_count_tags_hold_shared_bytes_and_spread_the_ages(self):
-        r = U.analyse(self.TAGS, self.BLOBS, self.AGES)
-        top = r["tree"]
-        by = {k["name"]: k for k in top["kids"]}
-        self.assertEqual((top["tags"], by["a"]["tags"], by["(top level)"]["tags"]), (4, 3, 1))
-        self.assertEqual(by["a"]["held"] - by["a"]["size"], 50)  # s is in a and also elsewhere
-        repo_x = next(k for k in by["a"]["kids"] if k["name"] == "a/x")
-        self.assertEqual((repo_x["size"], repo_x["held"], repo_x["tags"]), (110, 180, 2))
-        self.assertEqual((by["a"]["oldest"], by["a"]["newest"]), ([100, "mtime"], [900, "atime"]))  # a/y is the stalest, a/x the newest
-        self.assertEqual(top["held"], top["size"])
-
-    def test_a_tag_that_holds_no_layer_of_its_own_is_still_listed(self):
-        blobs = {D("1"): blobs_(base=40, a=5), D("2"): blobs_(base=40)}
-        r = U.analyse({"r:1": D("1"), "r:2": D("2")}, blobs)
-        (ns,) = r["tree"]["kids"]
-        (repo,) = ns["kids"]
-        self.assertEqual(sorted((k["name"], k["size"], k["held"]) for k in repo["kids"] if k["tags"]), [("1", 5, 45), ("2", 0, 40)])
 
     def test_garbage_collection_frees_blobs_whose_every_holder_is_selected(self):
         r = U.analyse(self.TAGS, self.BLOBS, self.AGES)
@@ -1765,14 +1714,6 @@ class StorageView(unittest.TestCase):
         self.assertEqual(sum(b[0] for b in d["blobs"]), 180)
         self.assertEqual(rows["latest"]["blobs"], [])
         self.assertEqual(U.repo_detail(r, self.BLOBS, "nope"), {"blobs": [], "tags": []})
-
-    def test_the_other_node_adds_up_what_it_folds(self):
-        tags = {f"r:{i}": D(format(i, "x")) for i in range(1, 8)}
-        ages = {D(f"u{i}"): (i * 10, "mtime") for i in range(1, 8)}
-        r = U.analyse(tags, {D(format(i, "x")): {D(f"u{i}"): i} for i in range(1, 8)}, ages)
-        kids = r["tree"]["kids"][0]["kids"][0]["kids"]
-        cut = U.folded(kids, 3)
-        self.assertEqual((cut[-1]["size"], cut[-1]["tags"], cut[-1]["oldest"]), (1 + 2 + 3 + 4 + 5, 5, [10, "mtime"]))
 
     def test_fs_usage_and_the_atime_flag(self):
         fs = U.fs_usage(tempfile.gettempdir())
@@ -2255,19 +2196,6 @@ class SeedRecentLater(unittest.TestCase):
         self.assertEqual((list(st.events), st.baselined, p.created), ([], True, {}))  # nothing remembered, so a tag on that digest is tried again
 
 
-class StorageNoFold(unittest.TestCase):
-    def test_every_repository_stays_listed_and_only_a_repositorys_tags_fold(self):
-        n = U.MAX_LEAVES + 5
-        tags = {f"ns/r{i}:t": D(format(i, "x")) for i in range(1, n)}
-        r = U.analyse(tags, {D(format(i, "x")): {D(f"b{i}"): i} for i in range(1, n)})
-        (ns,) = r["tree"]["kids"]
-        self.assertEqual(len(ns["kids"]), n - 1)  # no "other" node among the repositories
-        many = {f"r:{i}": D(format(i, "x")) for i in range(1, n)}
-        (repo,) = U.analyse(many, {D(format(i, "x")): {D(f"b{i}"): i} for i in range(1, n)})["tree"]["kids"][0]["kids"]
-        self.assertEqual(len(repo["kids"]), U.MAX_LEAVES)
-        self.assertTrue(repo["kids"][-1]["name"].startswith("other ("))
-
-
 class RecentFloor(unittest.TestCase):
     def test_old_tags_still_fill_recent_up_to_the_floor(self):
         clk = Clock()
@@ -2292,3 +2220,127 @@ class RecentFloor(unittest.TestCase):
         clk.now += 500
         s.update({"a"}, {f"a:{j}": f"d{j}" for j in range(5)})
         self.assertEqual(len(s.events), 2)
+
+
+def node_at(tree, path):
+    """The folder or repository node at a path of the usage map."""
+    n = tree
+    for part in path.split("/") if path else []:
+        n = next(k for k in n["kids"] if k.get("name") == part and k["kind"] in ("folder", "repo"))
+    return n
+
+
+def sub(n, kind):
+    return [k for k in n["kids"] if k["kind"] == kind]
+
+
+class UsageDepth(unittest.TestCase):
+    TAGS = {"org/team-a/backend/api/v:1": D("1"), "org/team-a/backend/api:1": D("1"), "org/team-a/backend/worker:1": D("2"), "org/team-b/web:1": D("3"), "solo:1": D("4")}
+    BLOBS = {D("1"): blobs_(base=50, sub=20, a=10), D("2"): blobs_(base=50, sub=20, w=5), D("3"): blobs_(base=50, o=1), D("4"): blobs_(x=3)}
+
+    def test_the_map_follows_every_path_segment(self):
+        r = U.analyse({"a/b/c/d/e:1": D("1")}, {D("1"): blobs_(l=7)})
+        n = r["tree"]
+        for part in ("a", "b", "c", "d"):
+            (n,) = [k for k in n["kids"] if k["kind"] in ("folder", "repo")]
+            self.assertEqual((n["name"], n["kind"], n["size"], n["tags"]), (part, "folder", 7, 1))
+        (repo,) = n["kids"]
+        self.assertEqual((repo["name"], repo["kind"], repo["path"], repo["repo"]), ("e", "repo", "a/b/c/d/e", "a/b/c/d/e"))
+        self.assertEqual(sub(repo, "tag")[0]["size"], 7)
+
+    def test_layers_shared_by_two_leaves_of_a_subfolder_land_on_that_subfolder(self):
+        r = U.analyse(self.TAGS, self.BLOBS)
+        backend = node_at(r["tree"], "org/team-a/backend")
+        (strip,) = sub(backend, "shared")
+        self.assertEqual((strip["size"], strip["path"]), (20, "org/team-a/backend"))  # sub: api and worker, not web
+        self.assertEqual(strip["sharers"], [("api", 20), ("worker", 20)])
+        self.assertEqual(node_at(r["tree"], "org/team-a/backend/api")["size"], 10 + 0)  # its own layer only: the digest has two tags, one leaf
+        (top,) = sub(node_at(r["tree"], "org"), "shared")  # base: three repositories under two team folders
+        self.assertEqual((top["size"], top["name"]), (50, "Layers used by more than one item in org"))
+        self.assertEqual(sorted(top["sharers"]), [("team-a", 50), ("team-b", 50)])  # counted once for each folder, not for each repository
+
+    def test_the_root_strip_says_what_it_is_and_who_shares_it(self):
+        r = U.analyse({"a/x:1": D("1"), "b/y:1": D("2")}, {D("1"): blobs_(s=9, p=1), D("2"): blobs_(s=9)})
+        (strip,) = sub(r["tree"], "shared")
+        self.assertEqual((strip["name"], strip["size"], strip["sharers"]), ("Layers used by more than one top-level folder", 9, [("a", 9), ("b", 9)]))
+        self.assertEqual(r["tree"]["size"], r["total"])
+
+    def test_a_path_can_be_a_repository_and_a_folder(self):
+        r = U.analyse({"a:1": D("1"), "a/b:1": D("2")}, {D("1"): blobs_(s=4, x=1), D("2"): blobs_(s=4)})
+        a = node_at(r["tree"], "a")
+        self.assertEqual(a["kind"], "repo")
+        (strip,) = sub(a, "shared")
+        self.assertEqual((strip["size"], strip["sharers"]), (4, [("(this repository)", 4), ("b", 4)]))
+        self.assertEqual([k["name"] for k in sub(a, "repo")], ["b"])
+        self.assertEqual(len(sub(a, "tag")), 1)
+
+    def test_every_node_is_the_sum_of_its_kids_and_the_top_is_the_total(self):
+        r = U.analyse(self.TAGS, self.BLOBS, {D("a"): (5, "atime")})
+
+        def check(n):
+            if n["kids"]:
+                self.assertEqual(n["size"], sum(k["size"] for k in n["kids"]), n["name"])
+                for k in n["kids"]:
+                    check(k)
+        check(r["tree"])
+        self.assertEqual(r["tree"]["size"], r["total"])
+        self.assertEqual(r["tree"]["tags"], 5)
+
+    def test_held_counts_shared_layers_in_every_folder_that_uses_them(self):
+        r = U.analyse(self.TAGS, self.BLOBS)
+        web = node_at(r["tree"], "org/team-b/web")
+        self.assertEqual((web["size"], web["held"]), (1, 51))
+        self.assertEqual(node_at(r["tree"], "org/team-a/backend")["held"], 50 + 20 + 10 + 5)  # base, sub, a and w once each
+        self.assertEqual(r["repos"]["org/team-a/backend/worker"], 75)
+
+    def test_charts_and_other_artifacts_are_counted_and_carry_their_kind(self):
+        tags = {"charts/web:1.0": D("1"), "charts/db:0.4": D("2"), "img:1": D("3")}
+        r = U.analyse(tags, {D("1"): blobs_(c=2, l=30), D("2"): blobs_(c2=2, l2=20), D("3"): blobs_(x=5)}, kinds={D("1"): "helm", D("2"): "helm"})
+        self.assertEqual(r["total"], 59)
+        charts = node_at(r["tree"], "charts")
+        self.assertEqual((charts["size"], charts["tags"]), (54, 2))
+        self.assertEqual(node_at(r["tree"], "charts/web")["type"], "helm")
+        self.assertNotEqual(node_at(r["tree"], "img").get("type"), "helm")
+        self.assertEqual(sub(node_at(r["tree"], "charts/web"), "tag")[0]["type"], "helm")
+
+    def test_only_the_tags_of_a_repository_fold_never_folders_or_repositories(self):
+        n = U.MAX_LEAVES + 5
+        many_repos = {f"ns/r{i}:t": D(format(i, "x")) for i in range(1, n)}
+        r = U.analyse(many_repos, {D(format(i, "x")): {D(f"b{i}"): i} for i in range(1, n)})
+        self.assertEqual(len(node_at(r["tree"], "ns")["kids"]), n - 1)
+        many_tags = {f"r:{i}": D(format(i, "x")) for i in range(1, n)}
+        repo = node_at(U.analyse(many_tags, {D(format(i, "x")): {D(f"b{i}"): i} for i in range(1, n)})["tree"], "r")
+        self.assertEqual(len(repo["kids"]), U.MAX_LEAVES)
+        other = repo["kids"][-1]
+        self.assertTrue(other["name"].startswith("other (") and other["kind"] == "other")
+        self.assertEqual(other["tags"], (n - 1) - (U.MAX_LEAVES - 1))
+
+    def test_a_tag_that_holds_no_layer_of_its_own_is_still_listed(self):
+        r = U.analyse({"r:1": D("1"), "r:2": D("2")}, {D("1"): blobs_(base=40, a=5), D("2"): blobs_(base=40)})
+        repo = node_at(r["tree"], "r")
+        self.assertEqual(sorted((k["name"], k["size"], k["held"]) for k in sub(repo, "tag")), [("1", 5, 45), ("2", 0, 40)])
+        self.assertEqual((sub(repo, "shared")[0]["name"], sub(repo, "shared")[0]["size"]), ("Layers used by more than one tag", 0 + 40))
+
+    def test_unread_manifests_are_listed_and_not_counted(self):
+        st = P.State(clock=Clock())
+        st.update({"a"}, {"a:1": D("1"), "a:2": D("2")})
+        st.mark_baselined()
+
+        class Client:
+            def manifest(self, repo, ref, head=False):
+                if ref == D("2"):
+                    raise R.RegistryError(500, "boom")
+                return b'{"config":{"digest":"%s","size":3},"layers":[]}' % D("c").encode(), "", ref
+        out = U.Usage(Client(), st, None, clock=Clock()).scan()
+        self.assertEqual(out["unread"], {"count": 1, "first": ["a:2"]})
+        self.assertEqual(out["tags"], 2)
+
+
+class UsageRescan(unittest.TestCase):
+    def test_a_change_rescans_after_the_gap_and_a_quiet_registry_waits_the_interval(self):
+        due = U.scan_due
+        self.assertTrue(due(100, None, 3600, 5, None))  # the first scan
+        self.assertFalse(due(100 + 30, 100, 3600, 5, 5))  # nothing changed
+        self.assertFalse(due(100 + 30, 100, 3600, 6, 5))  # changed, but a scan ran less than a minute ago
+        self.assertTrue(due(100 + 61, 100, 3600, 6, 5))  # a push or delete since the last scan: the sizes follow it
+        self.assertTrue(due(100 + 3600, 100, 3600, 5, 5))  # the interval

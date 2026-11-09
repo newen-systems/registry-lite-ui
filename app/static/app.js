@@ -783,13 +783,7 @@ let paneSeq = 0;
 function crumbs(n) {
   const parts = [];
   for (let x = n; x && x.kind !== "root"; x = x.parent) parts.unshift(x);
-  const reg = (cfg.registry || "Registry").replace(/^https?:\/\//, "");
-  return el("nav", { className: "crumbs", "aria-label": "Path" }, el("a", { href: "#/", textContent: reg }),
-    ...parts.map((x, i) => crumbNode(x, i === parts.length - 1)));
-}
-function crumbNode(x, last) {
-  if (last) return el("span", { className: x.kind === "node" ? "" : "t", textContent: crumbText(x) });
-  return el("a", { href: hashOf(x), className: x.kind === "tag" ? "t" : "", textContent: crumbText(x) });
+  return crumbNav((cfg.registry || "Registry").replace(/^https?:\/\//, ""), parts.map((x, i) => ({ text: crumbText(x), href: hashOf(x), cls: i === parts.length - 1 ? (x.kind === "node" ? "" : "t") : (x.kind === "tag" ? "t" : "") })));
 }
 function crumbText(x) {
   if (x.kind === "tag") return ":" + x.name;
@@ -1356,22 +1350,11 @@ let storageLoading = null;
 // under it, and a top-level folder also the layers shared inside it.
 function pathSizes(top) {
   const out = new Map();
-  const add = (path, bytes, oldest) => {
-    const p = out.get(path) || { size: 0, oldest: null };
-    p.size += bytes;
-    if (oldest && (!p.oldest || oldest[0] < p.oldest[0])) p.oldest = oldest;
-    out.set(path, p);
+  const walk = (n) => {
+    if (n.path) out.set(n.path, { size: n.size, oldest: n.oldest });
+    for (const k of n.kids || []) if (k.kind === "folder" || k.kind === "repo") walk(k);
   };
-  for (const ns of top?.kids || []) {
-    if (!("ns" in ns)) continue; // a layer shared by namespaces belongs to none of them
-    for (const k of ns.kids) {
-      if (k.repo) {
-        const parts = k.repo.split("/");
-        for (let i = 1; i < parts.length; i++) add(parts.slice(0, i).join("/"), k.size, k.oldest);
-        add(k.repo, k.size, k.oldest);
-      } else if (ns.ns) add(ns.ns, k.size, k.oldest); // shared inside the namespace
-    }
-  }
+  if (top) walk(top);
   return out;
 }
 function loadStorage(force) {
@@ -1413,13 +1396,6 @@ function ageClass(used, nowSecs) {
   return "a" + AGE_STEPS.findIndex(([limit]) => days < limit);
 }
 const ageDays = (used) => (used ? Math.max(0, Math.round((Date.now() / 1000 - used[0]) / 86400)) : null);
-function limitKids(kids, max) { // the largest `max` nodes with space, and one for the rest
-  const live = kids.filter((k) => k.size > 0);
-  if (live.length <= max) return live;
-  const rest = live.slice(max - 1);
-  const olds = rest.map((k) => k.oldest).filter(Boolean).sort((a, b) => a[0] - b[0]);
-  return [...live.slice(0, max - 1), { name: `${rest.length} smaller`, size: rest.reduce((a, k) => a + k.size, 0), held: 0, tags: rest.reduce((a, k) => a + (k.tags || 0), 0), oldest: olds[0] || null, newest: null, kids: [] }];
-}
 // What deleting some tags of a repository frees. detail: {blobs: [[size, holders]], tags: [{tag, digest, blobs}]} from /api/storage/repo, picked: tag names.
 // The registry deletes by digest, so every tag on a picked digest goes. A layer is freed when every image that uses it goes.
 function freedBytes(detail, picked) {
@@ -1451,32 +1427,101 @@ function growthCard(h) {
   const d = last.total - from.total, days = Math.max(1, Math.round((last.t - from.t) / 86400));
   return card(days >= 30 ? "Growth, last 30 days" : `Growth, last ${plural(days, "day")}`, `${d >= 0 ? "+" : "-"}${size(Math.abs(d))}`, sparkline(h.slice(-60).map((p) => p.total)));
 }
-const reposOf = (top) => (top?.kids || []).flatMap((ns) => ns.kids.filter((k) => k.repo));
+const reposOf = (top) => (top ? [...(top.kind === "repo" ? [top] : []), ...top.kids.filter((k) => k.kind === "folder" || k.kind === "repo").flatMap(reposOf)] : []);
 const repoHash = (repo) => `#/repo/${repo}?tab=storage`;
 
-// The map: one column per namespace, a block per repository, area is unique bytes, colour is the oldest last-used tag under it.
-function diskMap(u, nowSecs) {
-  const cols = u.tree.kids.filter((k) => "ns" in k && k.size > 0);
-  const col = (ns) => {
-    const isShared = (k) => !k.repo && k.name.startsWith("shared by");
-    const sharedKids = ns.kids.filter((k) => isShared(k) && k.size > 0), repos = limitKids(ns.kids.filter((k) => !isShared(k)), 30);
-    const c = el("div", { className: "dcol" }, el("div", { className: "dhead", title: `${ns.name} ${size(ns.size)}`, textContent: `${ns.name} ${size(ns.size)}` }),
-      ...sharedKids.map((k) => el("div", { className: "dshared", title: `${k.name}: ${size(k.size)}. Counted here, not in a repository.`, textContent: `${size(k.size)} shared` })));
-    for (const r of repos) {
-      const tags = r.tags ? `, ${plural(r.tags, "tag")}` : "";
-      const old = r.oldest ? `oldest ${ageWord() === "pulled" ? "pull" : "push"} ${ageDays(r.oldest)} d` : "age unknown";
-      const b = r.repo ? el("a", { className: `dblk ${ageClass(r.oldest, nowSecs)}`, href: repoHash(r.repo), title: `${r.name}: ${size(r.size)} only this repository holds, ${size(r.held)} in all` }) : el("div", { className: `dblk ${ageClass(r.oldest, nowSecs)}` });
-      b.style.flex = `${r.size} 1 0`;
-      b.append(el("span", { className: "dname", textContent: r.name }), el("span", { className: "dsub", textContent: `${size(r.size)}${tags}` }), el("span", { className: "dsub", textContent: old }));
-      c.append(b);
-    }
-    c.style.flex = `${ns.size} 1 0`;
-    return c;
+// The map: one folder level at a time. A block per folder, repository or tag, area is unique bytes, colour is the oldest last-used tag under it.
+// Click a folder to open it. Squarified treemap (Bruls, Huizing, van Wijk): sizes largest first, all above 0. Returns one {x, y, w, h} per
+// size, in order, that tile the w by h box with areas in proportion to the sizes and rows as close to square as the order allows.
+function squarify(sizes, w, h) {
+  const total = sizes.reduce((a, b) => a + b, 0);
+  if (!(total > 0) || !(w > 0) || !(h > 0)) return sizes.map(() => ({ x: 0, y: 0, w: 0, h: 0 }));
+  const areas = sizes.map((s) => (s * w * h) / total), out = [];
+  const worst = (row, side) => {
+    const sum = row.reduce((a, b) => a + b, 0);
+    return Math.max((side * side * Math.max(...row)) / (sum * sum), (sum * sum) / (side * side * Math.min(...row)));
   };
-  return el("div", { className: "dmap" }, ...cols.map(col));
+  let x = 0, y = 0, rw = w, rh = h, i = 0;
+  while (i < areas.length) {
+    const side = Math.min(rw, rh), row = [areas[i]];
+    let j = i + 1;
+    while (j < areas.length && worst([...row, areas[j]], side) <= worst(row, side)) row.push(areas[j++]);
+    const sum = row.reduce((a, b) => a + b, 0);
+    if (rw >= rh) { // a column down the left edge
+      const cw = sum / rh;
+      let cy = y;
+      for (const a of row) { out.push({ x, y: cy, w: cw, h: a / cw }); cy += a / cw; }
+      x += cw; rw -= cw;
+    } else { // a row along the top edge
+      const rowH = sum / rw;
+      let cx = x;
+      for (const a of row) { out.push({ x: cx, y, w: a / rowH, h: rowH }); cx += a / rowH; }
+      y += rowH; rh -= rowH;
+    }
+    i = j;
+  }
+  return out;
+}
+// The node a path leads to in the map, or null. "" is the top.
+function nodeAt(top, path) {
+  let n = top;
+  for (const part of path ? path.split("/") : []) {
+    n = n?.kids.find((k) => k.name === part && (k.kind === "folder" || k.kind === "repo"));
+    if (!n) return null;
+  }
+  return n;
+}
+// Blocks under `min` of the total become one block, so no label is squeezed into a few pixels. Returns the blocks, largest first.
+function groupSmall(kids, total, min) {
+  const live = kids.filter((k) => k.size > 0).sort((a, b) => b.size - a.size);
+  const small = live.filter((k) => k.size < total * min);
+  if (small.length < 2) return live;
+  const rest = live.filter((k) => !small.includes(k));
+  const olds = small.map((k) => k.oldest).filter(Boolean).sort((a, b) => a[0] - b[0]);
+  return [...rest, { name: `${small.length} smaller items`, kind: "other", size: small.reduce((a, k) => a + k.size, 0), held: 0, tags: small.reduce((a, k) => a + (k.tags || 0), 0), oldest: olds[0] || null, newest: null, kids: [], names: small.map((k) => k.name) }];
+}
+// The shared crumb: the registry, then one link per path segment, the last one plain. items: [{text, href}]
+function crumbNav(root, items) {
+  return el("nav", { className: "crumbs", "aria-label": "Path" }, el("a", { href: "#/", textContent: root }),
+    ...items.map((x, i) => (i === items.length - 1 ? el("span", { className: x.cls || "", textContent: x.text }) : el("a", { href: x.href, className: x.cls || "", textContent: x.text }))));
+}
+// The segments of a path as crumb items, each linking to the map at that folder: "a/b" -> a, b.
+function pathCrumbs(path, base) {
+  const parts = path ? path.split("/") : [];
+  return parts.map((text, i) => ({ text, href: `${base}/${parts.slice(0, i + 1).join("/")}` }));
+}
+const regLabel = () => (cfg.registry || "Registry").replace(/^https?:\/\//, "");
+const storagePath = () => { // the folder the map shows, from #/storage/<path>
+  let h = location.hash;
+  try { h = decodeURIComponent(h); } catch (e) { /* the raw hash is used */ }
+  const m = /^#\/storage\/(.+?)\/?$/.exec(h);
+  return m ? m[1] : "";
+};
+const MAP_W = 1000, MAP_H = 480, MIN_BLOCK = 0.02;
+const typeWord = (t) => (t === "helm" ? "chart" : t === "artifact" ? "artifact" : "");
+function diskMap(u, node, nowSecs, onShared) {
+  const kids = groupSmall(node.kids, node.size, MIN_BLOCK), boxes = squarify(kids.map((k) => k.size), MAP_W, MAP_H);
+  const box = el("div", { className: "dmap" });
+  kids.forEach((k, i) => {
+    const b = boxes[i], big = (b.w / MAP_W) * (b.h / MAP_H);
+    const drill = (k.kind === "folder" || k.kind === "repo") && k.kids.some((x) => x.size > 0 && (x.kind === "folder" || x.kind === "repo"));
+    const href = k.kind === "tag" ? `#/repo/${k.repo}:${k.tag}` : drill ? `#/storage/${k.path}` : k.kind === "repo" ? repoHash(k.repo) : k.kind === "folder" ? `#/storage/${k.path}` : null;
+    const tile = href ? el("a", { href }) : k.kind === "shared" ? el("button", { type: "button", onclick: () => onShared(k) }) : el("div");
+    tile.className = `dblk ${ageClass(k.oldest, nowSecs)}${k.kind === "shared" ? " shared" : ""}`;
+    Object.assign(tile.style, { left: (100 * b.x) / MAP_W + "%", top: (100 * b.y) / MAP_H + "%", width: (100 * b.w) / MAP_W + "%", height: (100 * b.h) / MAP_H + "%" });
+    const old = k.oldest ? `oldest ${ageWord() === "pulled" ? "pull" : "push"} ${ageDays(k.oldest)} d` : "age unknown";
+    tile.title = `${k.name}: ${size(k.size)} only ${k.kind === "other" ? "these hold" : "this holds"}${k.held > k.size ? `, ${size(k.held)} in all` : ""}${k.names ? `. ${k.names.slice(0, 12).join(", ")}${k.names.length > 12 ? " and more" : ""}` : ""}`;
+    if (b.w < 80 || b.h < 22) { tile.setAttribute("aria-label", `${k.name}, ${size(k.size)}`); return box.append(tile); } // too small for a readable label: the tooltip and the screen reader name it
+    tile.append(el("span", { className: "dname", textContent: k.name }));
+    if (b.w < 120 && big > 0.004) tile.append(el("span", { className: "dsub", textContent: size(k.size) }));
+    else if (big > 0.012) tile.append(el("span", { className: "dsub", textContent: `${size(k.size)}${k.tags && k.kind !== "tag" ? `, ${plural(k.tags, "tag")}` : ""}${typeWord(k.type) ? `, ${typeWord(k.type)}` : ""}` }), el("span", { className: "dsub", textContent: old }));
+    else if (big > 0.004) tile.append(el("span", { className: "dsub", textContent: size(k.size) }));
+    box.append(tile);
+  });
+  return box;
 }
 
-// The table: folder, repository, tag, each level sorted by the chosen column. One row is a digest, named by its tags.
+// The table: folder, folder, repository, tag, each level sorted by the chosen column. One tag row is a digest, named by its tags.
 const STORAGE_COLS = [
   { key: "name", label: "Name", val: (n) => n.name, cmp: (a, b) => collator.compare(a, b) },
   { key: "size", label: "Unique size", tip: "Bytes only this node holds. A layer several tags use counts once, at the lowest level that holds all of them.", val: (n) => n.size, cmp: numCmp },
@@ -1485,29 +1530,34 @@ const STORAGE_COLS = [
   { key: "oldest", label: "Oldest used", tip: "The tag under this node that was used longest ago. Sorts oldest first.", val: (n) => n.oldest?.[0] ?? null, cmp: numCmp },
   { key: "newest", label: "Newest used", val: (n) => n.newest?.[0] ?? null, cmp: numCmp },
 ];
-const storageUI = { view: "map", open: new Set(), sort: { key: "size", dir: -1 } };
-function storageTable(u, redraw) {
+const storageUI = { view: "map", open: new Set(), sort: { key: "size", dir: -1 }, sharedKey: null, gone: new Set() };
+// The rows below a shared item: the folders or repositories that use those layers, with the bytes each uses.
+const sharerRows = (n) => (n.sharers || []).map(([name, bytes]) => ({ name, kind: "sharer", size: bytes, held: bytes, tags: 0, oldest: null, newest: null, kids: [], path: n.path ? `${n.path}/${name}` : name }));
+const rowIcon = (n) => (n.kind === "folder" ? icon("folder") : n.kind === "repo" || n.kind === "tag" ? kindIcon(n.type || "image") : n.kind === "shared" ? icon("box") : null);
+function storageTable(u, top, redraw) {
   const col = STORAGE_COLS.find((c) => c.key === storageUI.sort.key), dir = storageUI.sort.dir;
   const order = (kids) => sortItems(kids, col, dir, (a, b) => collator.compare(a.name, b.name));
   const rows = [];
+  const kidsOf = (n) => (n.kind === "shared" ? sharerRows(n) : n.kids.filter((k) => k.size > 0 || k.tags));
   const walk = (n, depth, key) => {
-    const kids = n.kids.length ? order(n.kids) : [], open = storageUI.open.has(key);
-    const isTag = !!n.tag, isRepo = !!n.repo && !isTag;
+    const kids = order(kidsOf(n)), open = storageUI.open.has(key);
     const toggle = kids.length ? el("button", { type: "button", className: "linkbtn chevbtn", "data-fk": "c:" + key, "aria-expanded": String(open), "aria-label": `${open ? "Collapse" : "Expand"} ${n.name}`,
       onclick: () => { if (open) storageUI.open.delete(key); else storageUI.open.add(key); redraw(); } }, icon("chev", open ? "open" : "")) : el("span", { className: "chevgap" });
-    const name = isRepo ? el("a", { href: repoHash(n.repo), textContent: n.name }) : isTag ? el("a", { href: `#/repo/${n.repo}:${n.tag}`, textContent: n.name }) : el("span", { textContent: n.name });
+    const href = n.kind === "tag" ? `#/repo/${n.repo}:${n.tag}` : n.kind === "repo" ? repoHash(n.repo) : n.kind === "sharer" ? `#/storage/${n.path}` : null;
+    const name = href ? el("a", { href, textContent: n.name }) : el("span", { textContent: n.name });
     const actions = [];
-    if (isRepo) actions.push(el("a", { href: repoHash(n.repo), textContent: "Select tags" }));
-    if (isTag && canWrite()) actions.push(el("button", { type: "button", className: "danger", textContent: "Delete", onclick: () => void deleteManifest(n.repo, n.tag, n.digest, async () => { storageUI.gone.add(`${n.repo}@${n.digest}`); banner("Deleted. Sizes update at the next usage scan."); redraw(); }) }));
-    const indent = el("span", { className: "indent" }, toggle);
+    if (n.kind === "repo") actions.push(el("a", { href: repoHash(n.repo), textContent: "Select tags" }));
+    if (n.kind === "folder") actions.push(el("a", { href: `#/storage/${n.path}`, textContent: "Show in map" }));
+    if (n.kind === "tag" && canWrite()) actions.push(el("button", { type: "button", className: "danger", textContent: "Delete", onclick: () => void deleteManifest(n.repo, n.tag, n.digest, async () => { storageUI.gone.add(`${n.repo}@${n.digest}`); banner("Deleted. Sizes update at the next usage scan."); redraw(); }) }));
+    const indent = el("span", { className: "indent" }, toggle, ...(rowIcon(n) ? [el("span", { className: "ico" }, rowIcon(n))] : []));
     indent.style.paddingLeft = depth * 18 + "px";
-    if (!(isTag && storageUI.gone.has(`${n.repo}@${n.digest}`))) rows.push(el("tr", { className: "depth" + depth },
+    if (!(n.kind === "tag" && storageUI.gone.has(`${n.repo}@${n.digest}`))) rows.push(el("tr", { className: "depth" + depth },
       el("td", { className: "nm" }, indent, name),
-      el("td", { textContent: size(n.size) }), el("td", { className: "mut", textContent: size(Math.max(0, n.held - n.size)) }), el("td", { className: "mut", textContent: n.tags || "" }),
+      el("td", { textContent: size(n.size) }), el("td", { className: "mut", textContent: n.kind === "sharer" ? "" : size(Math.max(0, n.held - n.size)) }), el("td", { className: "mut", textContent: n.tags || "" }),
       usedCell(n.oldest), usedCell(n.newest), el("td", { className: "nw" }, ...actions)));
-    if (open) for (const k of kids) if (k.size > 0 || k.tags) walk(k, depth + 1, key + "/" + (k.digest || k.name));
+    if (open) for (const k of kids) walk(k, depth + 1, key + "/" + (k.digest || k.name + (k.kind === "shared" ? "!" : "")));
   };
-  for (const k of order(u.tree.kids)) if (k.size > 0 || k.tags) walk(k, 0, k.name);
+  for (const k of order(kidsOf(top))) walk(k, 0, k.name + (k.kind === "shared" ? "!" : ""));
   const head = STORAGE_COLS.map((c) => {
     const on = storageUI.sort.key === c.key;
     return el("th", { "aria-sort": on ? (dir < 0 ? "descending" : "ascending") : "none" }, el("button", { type: "button", className: "thbtn", title: c.tip || "", "data-fk": "s:" + c.key,
@@ -1515,19 +1565,18 @@ function storageTable(u, redraw) {
   });
   return el("table", { className: "sortable" }, el("thead", {}, el("tr", {}, ...head, el("th", {}))), el("tbody", {}, ...rows));
 }
-storageUI.gone = new Set();
 
 async function storagePane(seq) {
   const u = await loadStorage(true);
   if (seq !== paneSeq) return;
-  const nowSecs = Date.now() / 1000;
+  const nowSecs = Date.now() / 1000, path = storagePath();
   if (!u || !u.updated) {
-    showMain(el("nav", { className: "crumbs" }, el("a", { href: "#/", textContent: (cfg.registry || "Registry").replace(/^https?:\/\//, "") }), el("span", { textContent: "Storage" })), el("h2", { textContent: "Storage" }),
+    showMain(crumbNav(regLabel(), [{ text: "Storage", href: "#/storage" }]), el("h2", { textContent: "Storage" }),
       el("p", { className: "mut", textContent: "The first scan runs once the first full walk of the registry has finished." }));
     return;
   }
+  const node = nodeAt(u.tree, path) || u.tree, shownPath = node === u.tree ? "" : path;
   const repos = reposOf(u.tree), biggest = [...repos].sort((a, b) => b.size - a.size)[0];
-  const sharedAll = u.tree.kids.find((k) => !("ns" in k));
   const stale = u.stale;
   const cards = el("div", { className: "cards" },
     card("Largest repository", biggest ? [el("a", { href: repoHash(biggest.repo), textContent: biggest.repo }), `, ${size(biggest.size)}`] : "none"),
@@ -1536,27 +1585,35 @@ async function storagePane(seq) {
     card("Untagged layers (GC frees now)", u.unreferenced != null ? size(u.unreferenced) : "needs the storage mount", u.unreferenced != null ? null : el("div", { className: "mut", textContent: "Set UI_REGISTRY_STORAGE_MOUNT." })),
     growthCard(u.history));
   const redraw = () => keepFocus(holder, () => void body());
-  const holder = el("div");
+  const holder = el("div"), sharedBox = el("div");
   const legend = el("span", { className: "legendrow" }, `${ageHead()}:`, ...(u.mount ? AGE_STEPS.map(([, text], i) => el("span", { className: "legend" }, el("i", { className: "sw a" + i }), text)) : [el("span", { className: "legend" }, el("i", { className: "sw a-none" }), "unknown, needs the storage mount")]));
   const toggleBtn = (view, text) => el("button", { type: "button", "aria-pressed": String(storageUI.view === view), textContent: text, onclick: () => { storageUI.view = view; void paint(); } });
   const bar = el("div", { className: "bar" });
+  const showShared = (k) => { // which folders use the layers a shared block stands for
+    sharedBox.replaceChildren(el("h3", { textContent: k.name }), el("p", { className: "mut", textContent: `${size(k.size)} held once and used by more than one item${k.path ? ` in ${k.path}` : ""}. Bytes each of them uses:` }),
+      el("table", { className: "sortable" }, el("tbody", {}, ...sharerRows(k).map((r) => el("tr", {}, el("td", {}, el("a", { href: `#/storage/${r.path}`, textContent: r.name })), el("td", { textContent: size(r.size) }))))));
+  };
   const body = () => {
-    holder.replaceChildren(storageUI.view === "map" ? diskMap(u, nowSecs) : storageTable(u, redraw));
+    holder.replaceChildren(storageUI.view === "map" ? diskMap(u, node, nowSecs, showShared) : storageTable(u, node, redraw));
     return Promise.resolve();
   };
   const foot = el("p", { className: "mut" });
   const paint = () => {
-    foot.replaceChildren(storageUI.view === "map" ? "Click a block to open its repository and pick tags to delete. Area is unique bytes. A layer shared by two repositories counts in the namespace above them, in the strip under its name."
-      : "Click a header to sort each level. Shared size is what a node uses that something outside it uses too.", sharedAll ? ` ${size(sharedAll.size)} is shared by several namespaces.` : "");
+    sharedBox.replaceChildren();
+    foot.replaceChildren(storageUI.view === "map" ? "Click a folder to open it, a repository to pick tags to delete. Area is unique bytes. A layer several items use counts once, in a block named for what shares it, at the lowest folder that holds them all."
+      : "Click a header to sort each level. Shared size is what a node uses that something outside it uses too.");
     bar.replaceChildren(el("div", { role: "group", "aria-label": "View", className: "seg" }, toggleBtn("map", "Map"), toggleBtn("table", "Table")), legend);
     return body();
   };
   await paint();
   const note = u.atime === false ? " No layer has an access time newer than its write time, so ages are push times: either access time is not recorded on this storage (noatime, or an NFS server that does not update it) or nothing has been pulled since it was pushed." : "";
-  showMain(el("nav", { className: "crumbs", "aria-label": "Path" }, el("a", { href: "#/", textContent: (cfg.registry || "Registry").replace(/^https?:\/\//, "") }), el("span", { textContent: "Storage" })),
+  const unread = u.unread?.count ? [el("p", { className: "hint", textContent: `${plural(u.unread.count, "tag")} could not be read and ${u.unread.count === 1 ? "is" : "are"} not counted (${u.unread.first.join(", ")}${u.unread.count > 5 ? ", ..." : ""}). The registry did not return their manifests.` })] : [];
+  const pypi = cfg.pypi && !cfg.pypi.locked ? [el("p", { className: "mut", textContent: "Python packages are stored in GitLab, not on this registry's disk, so they are not counted here." })] : [];
+  const here = shownPath ? [el("p", { className: "mut" }, `${size(node.size)} in ${plural(node.tags, "tag")} under ${shownPath}. `, ...(node.kind === "repo" ? [el("a", { href: repoHash(node.repo), textContent: "Open the repository" })] : []))] : [];
+  showMain(crumbNav(regLabel(), [{ text: "Storage", href: "#/storage" }, ...pathCrumbs(shownPath, "#/storage")]),
     el("div", { className: "storagehead" }, el("h2", { textContent: "Storage" }),
       el("span", { className: "mut", textContent: `${size(u.total)} in ${plural(u.tags, "tag")} across ${plural(repos.length, "repository", "repositories")}. Sizes count each layer once. Scanned ${ago(u.updated)}.${note}` })),
-    cards, bar, holder, foot);
+    ...unread, ...pypi, cards, bar, ...here, holder, sharedBox, foot);
 }
 
 // The Storage tab of a repository: tags by last use with what deleting each frees, a selection, and the existing delete.
@@ -1717,7 +1774,7 @@ function parseHash() {
   try { h = decodeURIComponent(location.hash.slice(1)) || prefs.selected; } catch (e) { /* malformed escape: show the registry */ }
   const m = /^\/(?:repo|dir)\/([^:@]+)(?::([^@]+))?(?:@(.+))?$/.exec(h.replace(/\?tab=storage$/, ""));
   if (h === "/recent") return { kind: "recent" };
-  if (h === "/storage" || h === "/usage") return { kind: "storage" };
+  if (h === "/storage" || h === "/usage" || h.startsWith("/storage/")) return { kind: "storage" };
   if (h === "/bin") return { kind: "bin" };
   if (h === "/pypi") return { kind: "proot" };
   const py = /^\/pypi\/([^@]+)(?:@(.+))?$/.exec(h);

@@ -20,29 +20,69 @@ test("tags on one digest are marked wherever they sit in the list", () => {
   assert.deepEqual(digestLinks(["b"], counts({ b: 1 })), [null]);
 });
 
-test("the map shows the largest blocks and one for the rest", () => {
-  const limitKids = load("limitKids");
-  const kids = [30, 20, 10, 5, 0].map((size, i) => ({ name: "k" + i, size, tags: 1, oldest: size === 5 ? [900, "atime"] : size === 10 ? [100, "mtime"] : null, kids: [] }));
-  assert.deepEqual(limitKids(kids, 10).map((k) => k.name), ["k0", "k1", "k2", "k3"]); // an empty node is not drawn
-  const cut = limitKids(kids, 3);
-  assert.deepEqual(cut.map((k) => [k.name, k.size]), [["k0", 30], ["k1", 20], ["2 smaller", 15]]);
-  assert.deepEqual([cut[2].oldest, cut[2].tags], [[100, "mtime"], 2]); // the stalest of the blocks it hides
+test("the treemap tiles the box with areas in proportion to the sizes", () => {
+  const squarify = load("squarify");
+  const sizes = [600, 300, 200, 100, 50, 30, 10, 10];
+  const total = sizes.reduce((a, b) => a + b, 0), w = 960, h = 420;
+  const boxes = squarify(sizes, w, h);
+  assert.equal(boxes.length, sizes.length);
+  const eps = 1e-6;
+  boxes.forEach((b, i) => {
+    assert.ok(b.x >= -eps && b.y >= -eps && b.x + b.w <= w + eps && b.y + b.h <= h + eps, `tile ${i} inside the box`);
+    assert.ok(Math.abs(b.w * b.h - (sizes[i] / total) * w * h) < 1e-3, `tile ${i} area in proportion`);
+  });
+  assert.ok(Math.abs(boxes.reduce((a, b) => a + b.w * b.h, 0) - w * h) < 1e-3, "no gaps");
+  for (let i = 0; i < boxes.length; i++) { // no two tiles overlap
+    for (let j = i + 1; j < boxes.length; j++) {
+      const a = boxes[i], b = boxes[j];
+      assert.ok(a.x + a.w <= b.x + eps || b.x + b.w <= a.x + eps || a.y + a.h <= b.y + eps || b.y + b.h <= a.y + eps, `tiles ${i} and ${j} apart`);
+    }
+  }
+  assert.deepEqual(squarify([5], 10, 4), [{ x: 0, y: 0, w: 10, h: 4 }]); // one tile fills the box
+  assert.deepEqual(squarify([], 10, 4), []);
+  assert.deepEqual(squarify([0, 0], 10, 4), [{ x: 0, y: 0, w: 0, h: 0 }, { x: 0, y: 0, w: 0, h: 0 }]); // nothing to show
+  const worstRatio = Math.max(...squarify([4, 3, 2, 1], 100, 100).map((b) => Math.max(b.w / b.h, b.h / b.w)));
+  assert.ok(worstRatio < 3, "tiles stay near square");
 });
 
-test("folder sizes add the repositories under them", () => {
+
+test("blocks under 1% become one block and no folder is lost", () => {
+  const groupSmall = load("groupSmall");
+  const k = (name, size, oldest) => ({ name, size, tags: 1, oldest: oldest || null, kids: [] });
+  const kids = [k("big", 900), k("mid", 80), k("s1", 4, [900, "atime"]), k("s2", 3, [100, "mtime"]), k("s3", 2), k("empty", 0), k("s4", 11)];
+  const out = groupSmall(kids, 1000, 0.01);
+  assert.deepEqual(out.map((x) => x.name), ["big", "mid", "s4", "3 smaller items"]); // s4 (1.1%) stays, the empty one is dropped
+  const rest = out[3];
+  assert.deepEqual([rest.size, rest.tags, rest.oldest, rest.kind], [9, 3, [100, "mtime"], "other"]);
+  assert.deepEqual(rest.names, ["s1", "s2", "s3"]);
+  assert.deepEqual(groupSmall([k("a", 990), k("b", 5)], 1000, 0.01).map((x) => x.name), ["a", "b"]); // one small block is not worth a group
+});
+
+test("the map finds a folder by its path, five levels deep", () => {
+  const nodeAt = load("nodeAt");
+  const n = (name, kind, kids = []) => ({ name, kind, kids });
+  const top = n("", "folder", [n("org", "folder", [n("team-a", "folder", [n("backend", "folder", [n("api", "repo", [n("1", "tag")])]), n("backend", "tag")])])]);
+  assert.equal(nodeAt(top, ""), top);
+  assert.equal(nodeAt(top, "org/team-a/backend/api").kind, "repo");
+  assert.equal(nodeAt(top, "org/team-a/backend").kind, "folder"); // not the tag that has the same name
+  assert.equal(nodeAt(top, "org/nope/backend"), null);
+});
+
+test("crumbs are the segment names, each linking to its own folder", () => {
+  const pathCrumbs = load("pathCrumbs");
+  assert.deepEqual(pathCrumbs("org/team-a/backend", "#/storage"), [
+    { text: "org", href: "#/storage/org" }, { text: "team-a", href: "#/storage/org/team-a" }, { text: "backend", href: "#/storage/org/team-a/backend" }]);
+  assert.deepEqual(pathCrumbs("", "#/storage"), []);
+});
+
+test("folder sizes follow every level of the map", () => {
   const pathSizes = load("pathSizes");
-  const repo = (name, size, oldest) => ({ name, repo: name, size, oldest, kids: [] });
-  const top = { kids: [
-    { name: "ml", ns: "ml", size: 400, kids: [repo("ml/a", 100, [50, "atime"]), repo("ml/sub/b", 200, [20, "mtime"]), { name: "shared by repositories of ml", size: 100, oldest: [10, "mtime"], kids: [] }] },
-    { name: "(top level)", ns: "", size: 7, kids: [repo("solo", 7, null)] },
-    { name: "shared by namespaces", size: 40, kids: [] },
-  ] };
+  const n = (name, path, kind, size, oldest, kids = []) => ({ name, path, kind, size, oldest, kids });
+  const top = n("", "", "folder", 9, null, [n("org", "org", "folder", 9, [5, "mtime"], [n("team-a", "org/team-a", "folder", 9, [5, "mtime"], [
+    n("api", "org/team-a/api", "repo", 9, [5, "mtime"], [{ kind: "tag", name: "1", size: 9, kids: [] }, { kind: "shared", name: "s", size: 0, kids: [] }])])])]);
   const m = pathSizes(top);
-  assert.deepEqual(m.get("ml"), { size: 400, oldest: [10, "mtime"] }); // two repositories and the layers shared inside it
-  assert.deepEqual(m.get("ml/sub"), { size: 200, oldest: [20, "mtime"] });
-  assert.deepEqual(m.get("ml/a"), { size: 100, oldest: [50, "atime"] });
-  assert.deepEqual(m.get("solo"), { size: 7, oldest: null });
-  assert.deepEqual([...m.keys()].sort(), ["ml", "ml/a", "ml/sub", "ml/sub/b", "solo"]); // the strip shared by namespaces has no path
+  assert.deepEqual([...m.keys()], ["org", "org/team-a", "org/team-a/api"]); // tags and shared items have no path of their own
+  assert.deepEqual(m.get("org/team-a"), { size: 9, oldest: [5, "mtime"] });
 });
 
 test("deleting tags frees the layers every user of which goes", () => {
