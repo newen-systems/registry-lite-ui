@@ -4,6 +4,20 @@ registry-lite-ui is a web UI for a plain `registry:2` that browses, copies, move
 
 `podman-compose up -d` with `compose.yml` (registry and UI), or `podman-compose -f compose.ui.yml up -d` with `REGISTRY_URL` set for a registry that already runs. `docker compose` works the same way. Pin `UI_IMAGE` to a version or a digest in your `.env`.
 
+## Changes in 0.3.9
+
+### New Features
+
+- The sizes in the tree follow Size by on the Storage map: the total a folder or repository uses, or the unique bytes only it holds. Switching changes the tree at once, and the tooltip names the measure ([#59](https://github.com/newen-systems/registry-lite-ui/pull/59))
+
+### Bug Fixes
+
+- The line above the Storage map is again the folder's own total or unique figure, as in 0.3.7, not the sum of the blocks, which counts a shared layer once in each block. It equals the tree figure for the same folder ([#59](https://github.com/newen-systems/registry-lite-ui/pull/59))
+
+### Chores
+
+- The Up button is removed. The breadcrumb links go up a level, and every drill-down and crumb still adds a history entry so Back steps one level ([#59](https://github.com/newen-systems/registry-lite-ui/pull/59))
+
 ## Changes in 0.3.8
 
 ### Bug Fixes

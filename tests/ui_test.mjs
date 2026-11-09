@@ -82,7 +82,7 @@ test("folder sizes follow every level of the map", () => {
     n("api", "org/team-a/api", "repo", 9, [5, "mtime"], [{ kind: "tag", name: "1", size: 9, kids: [] }, { kind: "shared", name: "s", size: 0, kids: [] }])])])]);
   const m = pathSizes(top);
   assert.deepEqual([...m.keys()], ["org", "org/team-a", "org/team-a/api"]); // tags and shared items have no path of their own
-  assert.deepEqual(m.get("org/team-a"), { size: 9, oldest: [5, "mtime"] });
+  assert.deepEqual([m.get("org/team-a").size, m.get("org/team-a").oldest], [9, [5, "mtime"]]);
 });
 
 test("deleting tags frees the layers every user of which goes", () => {
@@ -149,24 +149,19 @@ class FakeNav { // location.hash and the history stack of a browser: a hash assi
   back() { this.at--; }
 }
 
-test("Up goes to the parent folder and Back returns to the level just left", () => {
-  const upHref = load("upHref"), pathCrumbs = load("pathCrumbs");
-  const goUp = loadWith("goUp", { upHref });
-  const crumbs = (path) => [{ text: "Storage", href: "#/storage" }, ...pathCrumbs(path, "#/storage")];
-  assert.equal(upHref([]), null); // the registry has no parent
-  assert.equal(upHref(crumbs("")), "#/"); // the top of Storage goes up to the registry
+test("Back returns to the level just left, however it was reached", () => {
+  const pathCrumbs = load("pathCrumbs");
   const nav = new FakeNav("#/storage");
-  nav.hash = "#/storage/org"; // drill down, as a click on a block does
-  nav.hash = "#/storage/org/team-a";
-  goUp(crumbs("org/team-a"), nav);
-  assert.equal(nav.hash, "#/storage/org");
+  const crumbs = pathCrumbs("org/team-a", "#/storage");
+  assert.deepEqual(crumbs.map((x) => x.text), ["org", "team-a"]); // the crumbs are plain links to each level
+  nav.hash = "#/storage/org"; // a click on a block, or on a crumb, is a hash assignment: one history entry each
+  nav.hash = crumbs[1].href;
+  assert.equal(nav.hash, "#/storage/org/team-a");
   nav.back();
-  assert.equal(nav.hash, "#/storage/org/team-a"); // Back undoes the Up
+  assert.equal(nav.hash, "#/storage/org");
+  nav.hash = crumbs[0].href; // the crumb for the level already shown still adds an entry, and Back leaves it
   nav.back();
   assert.equal(nav.hash, "#/storage/org");
-  goUp([], nav); // at the registry Up does nothing and adds no entry
-  assert.equal(nav.stack.length, 4); // the drill-downs and the Up are the four entries
-  assert.equal(upHref([{ text: "pkg", href: "#/pypi/pkg" }], "#/pypi"), "#/pypi"); // PyPI pages go up to the PyPI root, not the registry
 });
 
 test("no navigation replaces the history entry, so Back always steps one level", () => {
@@ -181,17 +176,20 @@ test("sizing by total keeps a block for a repository whose layers are all shared
   assert.deepEqual(groupSmall(kids, 50, 0.02).map((x) => x.name), ["api"]); // by frees they have nothing to draw
 });
 
-test("the line above the map is the sum of the blocks drawn, under Total and under Frees", () => {
-  const blockWeight = load("blockWeight");
-  const mapKids = loadWith("mapKids", {});
-  const mapSum = loadWith("mapSum", { blockWeight, mapKids });
-  const groupSmall = load("groupSmall");
-  const k = (name, kind, size, held) => ({ name, kind, size, held, tags: 1, oldest: null, kids: [] });
-  const node = { kids: [k("team-a", "folder", 100, 150), k("team-b", "folder", 0, 280), k("s", "shared", 50, 50), k("tiny", "folder", 1, 2)] };
-  assert.equal(mapSum(node, "total"), 150 + 280 + 2); // the shared block would count its layers twice, so it is not drawn
-  assert.equal(mapSum(node, "frees"), 100 + 0 + 50 + 1);
-  for (const by of ["total", "frees"]) { // grouping small blocks into one keeps the sum
-    const w = blockWeight(by), drawn = groupSmall(mapKids(node, by), mapSum(node, by), 0.02, w);
-    assert.equal(drawn.reduce((a, x) => a + w(x), 0), mapSum(node, by), by);
+test("the summary line and the tree give the same figure for a folder, under Total and under Frees", () => {
+  const figureOf = load("figureOf"), pathSizes = load("pathSizes");
+  const blockWeight = load("blockWeight"), mapKids = load("mapKids");
+  const n = (name, path, kind, size, held, kids = []) => ({ name, path, kind, size, held, oldest: null, kids });
+  const k = (name, size, held, kind = "folder") => ({ ...n(name, "org/" + name, kind, size, held), tags: 1 });
+  const org = n("org", "org", "folder", 100, 369, [k("team-a", 100, 150), k("team-b", 0, 280), k("shared", 50, 50, "shared")]);
+  const top = n("", "", "folder", 100, 369, [org]);
+  const tree = pathSizes(top);
+  for (const [by, want] of [["total", 369], ["frees", 100]]) {
+    assert.equal(figureOf(org, by), want); // the line above the map
+    assert.equal(figureOf(tree.get("org"), by), want); // the tree row
   }
+  const drawn = mapKids(org, "total").reduce((a, x) => a + blockWeight("total")(x), 0);
+  assert.ok(drawn >= figureOf(org, "total")); // 430 against 369: a layer shared by two blocks is in both
+  assert.equal(mapKids(org, "total").length, 2); // the shared block is not drawn under Total
 });
+

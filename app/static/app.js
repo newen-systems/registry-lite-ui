@@ -91,7 +91,6 @@ const ICONS = {
   clock: [["s", "M8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2zM8 4.8V8l2.2 1.4"]],
   pkg: [["s", "M8 1.8l5.5 3v6.4L8 14.2l-5.5-3V4.8zM2.5 4.8L8 7.8l5.5-3M8 7.8v6.4"]],
   drive: [["s", "M3 4.5h10A1.5 1.5 0 0 1 14.5 6v4a1.5 1.5 0 0 1-1.5 1.5H3A1.5 1.5 0 0 1 1.5 10V6A1.5 1.5 0 0 1 3 4.5zM1.5 8.2h13M11.2 9.9h.01M13 9.9h.01"]], // a hard drive: a box, a rule, two lights
-  left: [["s", "M13 8H3.5M7.5 4L3.5 8l4 4"]], // back: an arrow to the left
   tag: [["s", "M2 2.5h5.2l6.3 6.3-4.7 4.7L2.5 7.2V2.5zM5 5h.01"]],
   pypi: [["", "M8 1.5l5.6 3.1L8 7.7 2.4 4.6z"], ["s", "M2.4 5.5v5.9L8 14.5V8.6zM13.6 5.5v5.9L8 14.5"]],
 };
@@ -451,17 +450,19 @@ function rowEl(r) {
   }, ...guides, el("span", { className: "chev" }, expandable(n) ? icon("chev") : null), iconFor(n, open), el("span", { className: "lbl", textContent: rowLabel(n) }));
   row.dataset.id = n.id;
   const info = prefs.treeSizes && n.kind === "node" ? storage.paths.get(n.path) : null; // size of a folder or repository, with a thin bar against the largest
-  if (info && info.size > 0) {
+  const fig = info ? figureOf(info, prefs.mapBy) : 0;
+  if (info && fig > 0) {
     const lbl = row.querySelector(".lbl"), wrap = el("span", { className: "lblwrap" });
     lbl.replaceWith(wrap);
     wrap.append(lbl);
-    const pct = Math.round((100 * info.size) / (storage.max || 1));
+    const pct = Math.round((100 * fig) / (storage.maxBy[prefs.mapBy] || 1));
     if (pct >= 3) { // below that the bar would be a dot
       const bar = el("span", { className: "nbar" });
       bar.style.width = pct + "%";
       wrap.append(bar);
     }
-    row.append(el("span", { className: "nsz", title: `${size(info.size)} only this ${n.repo ? "repository" : "folder"} holds. Layers other repositories also use are not counted here, so the Storage tab of a repository shows a larger total.`, textContent: size(info.size) }));
+    row.append(el("span", { className: "nsz", title: prefs.mapBy === "total" ? `${size(fig)} total: every byte this ${n.repo ? "repository" : "folder"} uses, including layers other repositories also use. Size by on the Storage map switches to the unique bytes.`
+      : `${size(fig)} unique: only this ${n.repo ? "repository" : "folder"} holds them, so deleting it frees them. Size by on the Storage map switches to the total.`, textContent: size(fig) }));
   }
   if (expandable(n)) row.setAttribute("aria-expanded", String(open));
   const t = tree.flashes.get(n.id);
@@ -483,7 +484,7 @@ let treeQueued = false;
 function scheduleTree() { if (!treeQueued) { treeQueued = true; requestAnimationFrame(() => { treeQueued = false; renderTree(); }); } }
 function rowSig(r) { // what a row looks like, so an unchanged one is reused
   const n = r.n;
-  const own = n ? [isOpen(n), n.kind === "node" && n.repo, n.id === tree.sel, n.id === tree.focus, rowLabel(n), expandable(n), n.kind === "tag" && tagKind(n), prefs.treeSizes && n.kind === "node" && storage.paths.has(n.path) && storage.paths.get(n.path).size + ":" + storage.max] : [];
+  const own = n ? [isOpen(n), n.kind === "node" && n.repo, n.id === tree.sel, n.id === tree.focus, rowLabel(n), expandable(n), n.kind === "tag" && tagKind(n), prefs.treeSizes && n.kind === "node" && storage.paths.has(n.path) && prefs.mapBy + ":" + figureOf(storage.paths.get(n.path), prefs.mapBy) + ":" + storage.maxBy[prefs.mapBy]] : [];
   return [r.depth, r.anc.join(""), r.last, r.pos, r.count, ...own].join("|");
 }
 function cachedRow(r, keep) {
@@ -1345,18 +1346,23 @@ async function loadAges(n) { // the ages of every tag in a repository, from the 
   try { n.ages = (await api("/api/ages?repo=" + encodeURIComponent(n.path))).tags; } catch (e) { n.ages = {}; }
 }
 
-const storage = { data: null, fs: null, at: 0, paths: new Map(), max: 0 };
+const storage = { data: null, fs: null, at: 0, paths: new Map(), maxBy: { total: 0, frees: 0 } };
 let storageLoading = null;
 // Size and oldest last-used of every folder and repository, by path, from the map the server sends. A folder adds the repositories
 // under it, and a top-level folder also the layers shared inside it.
 function pathSizes(top) {
   const out = new Map();
   const walk = (n) => {
-    if (n.path) out.set(n.path, { size: n.size, oldest: n.oldest });
+    if (n.path) out.set(n.path, { size: n.size, held: n.held, oldest: n.oldest });
     for (const k of n.kids || []) if (k.kind === "folder" || k.kind === "repo") walk(k);
   };
   if (top) walk(top);
   return out;
+}
+// The two measures: Total is every byte a node uses, shared layers included, Frees the unique bytes only it holds. One figure for a folder
+// in the tree and for the line above the map, so the two always agree.
+function figureOf(x, by) {
+  return by === "total" ? x.held : x.size;
 }
 function loadStorage(force) {
   if (!cfg.usage) return Promise.resolve(null);
@@ -1365,7 +1371,7 @@ function loadStorage(force) {
     storage.data = u; storage.fs = u.fs; storage.at = Date.now();
     storageUI.gone.clear(); // rows hidden after a delete come back with the scan, which no longer has them or still does
     storage.paths = pathSizes(u.tree);
-    storage.max = Math.max(0, ...[...storage.paths.values()].map((p) => p.size));
+    storage.maxBy = { total: Math.max(0, ...[...storage.paths.values()].map((p) => p.held)), frees: Math.max(0, ...[...storage.paths.values()].map((p) => p.size)) };
     drawDisk();
     scheduleTree();
     return u;
@@ -1485,20 +1491,8 @@ function groupSmall(kids, total, min, weight = (k) => k.size) {
 }
 // The shared crumb: the registry, then one link per path segment, the last one plain. items: [{text, href}]
 function crumbNav(root, items, rootHref = "#/") {
-  const nav = el("nav", { className: "crumbs", "aria-label": "Path" }, el("a", { href: rootHref, textContent: root }),
+  return el("nav", { className: "crumbs", "aria-label": "Path" }, el("a", { href: rootHref, textContent: root }),
     ...items.map((x, i) => (i === items.length - 1 ? el("span", { className: x.cls || "", textContent: x.text }) : el("a", { href: x.href, className: x.cls || "", textContent: x.text }))));
-  if (!items.length) return nav; // the registry itself has nowhere to go up to
-  return el("div", { className: "crumbrow" }, el("button", { type: "button", className: "up", title: "Up one level", onclick: () => goUp(items, location, rootHref) }, icon("left"), "Up"), nav);
-}
-// Where Up goes: the crumb before the last one, else the registry. Null at the registry.
-function upHref(items, rootHref = "#/") {
-  if (!items.length) return null;
-  return items.length > 1 ? items[items.length - 2].href : rootHref;
-}
-// Up is a plain hash assignment, so it adds a history entry and the browser's Back returns to the level just left.
-function goUp(items, loc, rootHref = "#/") {
-  const href = upHref(items, rootHref);
-  if (href) loc.hash = href;
 }
 // The segments of a path as crumb items, each linking to the map at that folder: "a/b" -> a, b.
 function pathCrumbs(path, base) {
@@ -1522,9 +1516,6 @@ function blockWeight(by) {
 }
 function mapKids(node, by) {
   return node.kids.filter((k) => by === "frees" || k.kind !== "shared");
-}
-function mapSum(node, by) {
-  return mapKids(node, by).reduce((a, k) => a + blockWeight(by)(k), 0);
 }
 function diskMap(u, node, nowSecs, onShared, onOther, by = "total") {
   const weight = blockWeight(by);
@@ -1632,7 +1623,7 @@ async function storagePane(seq) {
     sharedBox.replaceChildren();
     foot.replaceChildren(storageUI.view === "map" ? `Click a folder to open it, a repository to pick tags to delete. ${prefs.mapBy === "total" ? "Area is every byte a block uses, so a layer used by two blocks counts in both and the blocks add up to more than the disk holds." : "Area is the bytes only a block holds, which deleting it frees. A layer several items use counts once, in a block named for what shares it, at the lowest folder that holds them all."}`
       : "Click a header to sort each level. Shared size is what a node uses that something outside it uses too.");
-    const byBtn = (v, text, tip) => el("button", { type: "button", title: tip, "aria-pressed": String(prefs.mapBy === v), textContent: text, onclick: () => { prefs.mapBy = v; savePrefs(); void paint(); } });
+    const byBtn = (v, text, tip) => el("button", { type: "button", title: tip, "aria-pressed": String(prefs.mapBy === v), textContent: text, onclick: () => { prefs.mapBy = v; savePrefs(); scheduleTree(); void paint(); } });
     bar.replaceChildren(el("div", { role: "group", "aria-label": "View", className: "seg" }, toggleBtn("map", "Map"), toggleBtn("table", "Table")),
       ...(storageUI.view === "map" ? [el("span", { className: "mut" }, "Size by ", el("div", { role: "group", "aria-label": "Size by", className: "seg" },
         byBtn("total", "Total", "Every byte the block uses, shared layers included"), byBtn("frees", "Frees", "Only the bytes that deleting it frees")))] : []), legend);
@@ -1644,7 +1635,7 @@ async function storagePane(seq) {
   const pypi = cfg.pypi && !cfg.pypi.locked ? [el("p", { className: "mut", textContent: "Python packages are stored in GitLab, not on this registry's disk, so they are not counted here." })] : [];
   const hollow = node.kids.filter((k) => k.size === 0 && k.tags > 0).length;
   const here = [...(hollow && storageUI.view === "map" && prefs.mapBy === "frees" ? [el("p", { className: "mut", textContent: `${plural(hollow, "item")} here ${hollow === 1 ? "holds" : "hold"} no bytes of their own (every layer is shared), so this map has no block for ${hollow === 1 ? "it" : "them"}. Size by Total shows ${hollow === 1 ? "it" : "them"}, and so does the table.` })] : []),
-    ...(shownPath ? [el("p", { className: "mut" }, `${size(mapSum(node, prefs.mapBy))} ${prefs.mapBy === "total" ? "in the blocks, a layer several share counted in each" : "unique"}, ${plural(node.tags, "tag")} under ${shownPath}. `, ...(node.kind === "repo" ? [el("a", { href: repoHash(node.repo), textContent: "Open the repository" })] : []))] : [])];
+    ...(shownPath ? [el("p", { className: "mut" }, `${size(figureOf(node, prefs.mapBy))} ${prefs.mapBy === "total" ? "total" : "unique"} in ${plural(node.tags, "tag")} under ${shownPath}. `, ...(node.kind === "repo" ? [el("a", { href: repoHash(node.repo), textContent: "Open the repository" })] : []))] : [])];
   showMain(crumbNav(regLabel(), [{ text: "Storage", href: "#/storage" }, ...pathCrumbs(shownPath, "#/storage")]),
     el("div", { className: "storagehead" }, el("h2", { textContent: "Storage" }),
       el("span", { className: "mut", textContent: `${size(u.total)} in ${plural(u.tags, "tag")} across ${plural(repos.length, "repository", "repositories")}. Sizes count each layer once. Scanned ${ago(u.updated)}.${note}` })),
@@ -2570,7 +2561,7 @@ function settings() {
         ...(cfg.pypi ? [row("s-psort", "Python packages", "Order of packages.", segmented("s-psort", [["name", "Name"], ["recent", "Recent"]], "packageSort", apply))] : []),
         row("s-rows", "Rows per page", "Rows a list shows before Show more.", selectEl("s-rows", "pageSize", CHOICES.pageSize, String, apply)),
         row("s-empty", "Show empty repositories", "Repositories with no tags. The registry cannot delete them.", switchEl("s-empty", "showEmpty", apply)),
-        ...(cfg.usage ? [row("s-sizes", "Show sizes in the tree", "The unique size of each folder and repository (the bytes only it holds, which deleting it frees), with a bar against the largest. The Storage map can show the total instead.", switchEl("s-sizes", "treeSizes", apply))] : [])),
+        ...(cfg.usage ? [row("s-sizes", "Show sizes in the tree", "The size of each folder and repository, with a bar against the largest. It follows Size by on the Storage map: the total it uses, or the unique bytes only it holds, which deleting it frees.", switchEl("s-sizes", "treeSizes", apply))] : [])),
       section("Lifecycle", lifecycleRow()),
       section("Live updates", row("s-live", "Auto-refresh", "Update the tree and lists as the registry changes.", switchEl("s-live", "live", apply)), refreshRow, pollRow,
         row("s-notify", "Notify on push", canNotify() ? "A desktop notification for each push while this window is not in focus." : "Needs the page on HTTPS or localhost.", notifyCtl))),
