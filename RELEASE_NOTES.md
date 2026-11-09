@@ -4,6 +4,14 @@ registry-lite-ui is a web UI for a plain `registry:2` that browses, copies, move
 
 `podman-compose up -d` with `compose.yml` (registry and UI), or `podman-compose -f compose.ui.yml up -d` with `REGISTRY_URL` set for a registry that already runs. `docker compose` works the same way. Pin `UI_IMAGE` to a version or a digest in your `.env`.
 
+## Changes in 0.2.29
+
+### New Features
+
+- Last used: with `UI_REGISTRY_STORAGE_MOUNT`, the tag list, the tag page and the Layers table show when a blob was last used, from the layer file's access time where it is newer than its modification time, else the modification time, else the creation time, with the source shown beside it. The columns sort ([#47](https://github.com/newen-systems/registry-lite-ui/pull/47))
+- Usage page (header, Usage): a chart of the total, the on-disk total and the five largest repositories over time, kept in the state file for 90 days (hourly for a week, then daily). `UI_USAGE_INTERVAL` sets the scan interval, `0` turns it off ([#47](https://github.com/newen-systems/registry-lite-ui/pull/47))
+- Usage map on the same page: a treemap of unique space by namespace, repository and tag, coloured by last use so stale data stands out, with a click to drill down ([#47](https://github.com/newen-systems/registry-lite-ui/pull/47))
+
 ## Changes in 0.2.28
 
 ### Chores

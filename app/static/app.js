@@ -49,6 +49,7 @@ function el(tag, props, ...kids) {
 const short = (d) => (d || "").slice(0, 19);
 function size(n) {
   if (n == null) return "";
+  if (n >= 1073741824) return (n / 1073741824).toFixed(1) + " GiB";
   return n < 1048576 ? (n / 1024).toFixed(1) + " KiB" : (n / 1048576).toFixed(1) + " MiB";
 }
 const code = (t) => el("code", { textContent: t });
@@ -387,6 +388,8 @@ function dropManifests(path) {
 
 // ---- Tree rendering ----------------------------------------------------------------------------------------------
 const RECENT = { kind: "recent", id: "recent", name: "Recent" };
+const USAGE = { kind: "usage", id: "usage", name: "Usage" };
+const PSEUDO = { recent: RECENT, usage: USAGE }; // views with a header link or a first tree row, not a node in the tree
 let rows = []; // visible entries, in order
 function visible() {
   rows = [];
@@ -495,6 +498,7 @@ function select(id, reveal) {
 
 function hashOf(n) {
   if (n.kind === "recent") return "#/recent";
+  if (n.kind === "usage") return "#/usage";
   if (n.kind === "proot") return "#/pypi";
   if (n.kind === "pkg") return "#/pypi/" + n.key;
   if (n.kind === "ver") return `#/pypi/${n.parent.key}@${n.version}`;
@@ -852,6 +856,9 @@ const TAG_COLUMNS = [
   { key: "created", label: "Created", tip: "Sorts loaded rows. When the image was built, from its config. A multi-arch index has none.", val: createdOf, cmp: numCmp },
   { key: "changed", label: "Pushed", tip: "When this UI saw the tag take its digest: the push, to within one walk of the registry", val: (t) => t.changed || null, cmp: numCmp },
 ];
+const USED_TIP = "When the newest blob of the tag was last used, from the registry storage: the access time where the host records it, else the modification time. Sorts oldest first. As of the last usage scan.";
+const USED_COLUMN = { key: "used", label: "Last used", tip: USED_TIP, val: (t) => t.parent.ages?.[t.tag]?.[0] ?? null, cmp: numCmp };
+const tagColumns = () => (cfg.storageMount ? [...TAG_COLUMNS, USED_COLUMN] : TAG_COLUMNS);
 // Recent push: when the poller saw the tag take its digest. A tag it has not seen yet came after its last walk, so it goes first.
 const pushedAt = (t) => t.changed ?? Infinity;
 const tagDefault = (a, b) => (prefs.tagSort === "recent" ? pushedAt(b) - pushedAt(a) : 0) || tagCompare(b.tag, a.tag); // then newest version first
@@ -962,7 +969,8 @@ function tagRow(t) { // a table row for a tag, whose kind, size, platforms and b
   if (cached) r.apply(cached);
   const ref = `${cfg.registryHost || "<REGISTRY>"}/${t.parent.path}:${t.tag}`;
   r.tr = el("tr", {}, el("td", {}, ico, rowCopy(ref, `Copy image reference for ${t.tag}`)),
-    el("td", { className: "nw dcell" }, code(short(t.digest)), rowCopy(t.digest, `Copy digest for ${t.tag}`), r.link), sz, plat, built, el("td", { className: "mut", textContent: ago(t.changed) }));
+    el("td", { className: "nw dcell" }, code(short(t.digest)), rowCopy(t.digest, `Copy digest for ${t.tag}`), r.link), sz, plat, built, el("td", { className: "mut", textContent: ago(t.changed) }),
+    ...(cfg.storageMount ? [usedCell(t.parent.ages?.[t.tag])] : []));
   return r;
 }
 // The mark in the Digest column of each row whose digest another tag shares, wherever that tag is in the list. Neighbouring
@@ -1002,7 +1010,7 @@ function tagsList(n) {
     return rowsOf.get(t);
   };
   const list = listView({
-    id: "tags:" + n.path, items: n.tagList, columns: TAG_COLUMNS, defaultCmp: tagDefault, tie: (a, b) => tagCompare(b.tag, a.tag),
+    id: "tags:" + n.path, items: n.tagList, columns: tagColumns(), defaultCmp: tagDefault, tie: (a, b) => tagCompare(b.tag, a.tag),
     match: (t, text) => t.tag.toLowerCase().includes(text), placeholder: "Filter tags", lead: pick?.head,
     row: (t) => entry(t).tr, onDraw: (vis) => { linkDigests(n, vis.map(entry)); vis.forEach((t) => lazyWatch(entry(t))); pick?.shown(vis); },
     lateKeys: ["size", "platforms", "created"], onLate: (redraw) => { lazy.redraw = redraw; },
@@ -1202,6 +1210,7 @@ function manifestProps(n, m, path, sharing) {
   if (m.created) props.push(tableRow("Created", el("span", { title: new Date(m.created).toLocaleString(), textContent: ago(createdMs(m) / 1000) })));
   props.push(tableRow("Tags", sharing.join(", ") || "none"));
   if (n.kind === "tag" && n.changed) props.push(tableRow("Changed", el("span", { title: new Date(n.changed * 1000).toLocaleString(), textContent: ago(n.changed) })));
+  if (n.kind === "tag" && cfg.storageMount) props.push(tableRow("Last used", usedEl(n.parent.ages?.[n.tag])));
   if (m.platform) props.push(tableRow("Platform", `${m.platform.os}/${m.platform.architecture}`));
   if (m.config) props.push(tableRow("Config", code(m.config)));
   return props;
@@ -1228,13 +1237,14 @@ const LAYER_COLUMNS = [
   { key: "digest", label: "Digest", val: (l) => l.digest, cmp: collator.compare },
   { key: "size", label: "Size", val: (l) => l.size, cmp: numCmp },
   { key: "pushed", label: "Pushed", tip: "When the registry first stored the layer, from its file time. A layer shared with older images keeps its first push.", val: (l) => l.pushed ?? null, cmp: numCmp },
+  { key: "used", label: "Last used", tip: "The access time of the layer's file where the host records it, else its modification time. Sorts oldest first.", val: (l) => l.used?.[0] ?? null, cmp: numCmp },
 ];
 function layersSection(m) {
   if (!m.layers.length) return [];
   const timed = !!cfg.storageMount, items = m.layers.map((l, i) => ({ ...l, n: i + 1 }));
   const when = (t) => el("td", { className: "mut", title: t ? new Date(t * 1000).toLocaleString() : "", textContent: t ? ago(t) : "" });
-  const row = (l) => el("tr", {}, el("td", { className: "mut", textContent: String(l.n) }), el("td", {}, code(l.digest)), el("td", { textContent: size(l.size) }), ...(timed ? [when(l.pushed)] : []));
-  const hint = timed ? [] : [el("p", { className: "hint", textContent: "Mount the registry storage read-only and set UI_REGISTRY_STORAGE_MOUNT to see when each layer was pushed." })];
+  const row = (l) => el("tr", {}, el("td", { className: "mut", textContent: String(l.n) }), el("td", {}, code(l.digest)), el("td", { textContent: size(l.size) }), ...(timed ? [when(l.pushed), usedCell(l.used)] : []));
+  const hint = timed ? [] : [el("p", { className: "hint", textContent: "Mount the registry storage read-only and set UI_REGISTRY_STORAGE_MOUNT to see when each layer was pushed and last used." })];
   return [el("h3", { textContent: "Layers" }), ...listView({ id: "layers:" + m.digest, items, columns: timed ? LAYER_COLUMNS : LAYER_COLUMNS.slice(0, 3),
     defaultCmp: (a, b) => a.n - b.n, tie: (a, b) => a.n - b.n, match: (l, text) => l.digest.includes(text), placeholder: "Filter layers", row }), ...hint];
 }
@@ -1255,6 +1265,7 @@ async function manifestPane(n, seq) {
   const m = await getManifest(path, ref, n.digest);
   if (n.kind === "tag") await ensurePlats(n);
   const history = n.kind === "tag" && cfg.storageMount ? await api(`/api/history?repo=${encodeURIComponent(path)}&tag=${encodeURIComponent(n.tag)}`).catch(() => []) : [];
+  if (n.kind === "tag") await loadAges(t.parent);
   if (seq !== paneSeq) return;
   const sharing = t.parent.tagList.filter((x) => x.digest === m.digest).map((x) => x.tag); // from the tag list the pane already holds
   showMain(crumbs(n), manifestHeading(n, t, path, artifactKind(m)), actions(path, ref, m.digest), el("table", { className: "props" }, ...manifestProps(n, m, path, sharing)),
@@ -1268,18 +1279,19 @@ async function drawPane(n, seq) {
   resetHidden();
   if (!n) return notFoundPane();
   if (n === RECENT) return recentPane();
+  if (n === USAGE) return usagePane(seq);
   if (n.kind === "root") return rootPane(n);
   if (n.kind === "proot") return prootPane(n);
   if (n.kind === "pkg") return pkgPane(n);
   if (n.kind === "ver") return verPane(n);
   if (n.kind !== "node") return manifestPane(n, seq);
   if (!n.repo) return folderPane(n);
-  await ensureTags(n);
+  await Promise.all([ensureTags(n), loadAges(n)]);
   if (seq === paneSeq) repoPane(n);
 }
 async function renderPane(force) { // force: a setting changed under an open panel and the page behind it should show the effect
   if (!force && modalOpen()) { paneStale = true; return; }
-  const seq = ++paneSeq, n = tree.sel === "recent" ? RECENT : tree.byId.get(tree.sel);
+  const seq = ++paneSeq, n = PSEUDO[tree.sel] || tree.byId.get(tree.sel);
   try {
     await drawPane(n, seq);
   } catch (e) { if (seq === paneSeq) banner(e.message, true); }
@@ -1292,12 +1304,218 @@ function notice() {
   return cfg.deleteEnabled !== false ? "" : "Deletion is disabled on this registry (REGISTRY_STORAGE_DELETE_ENABLED is not true). Move and Delete will fail.";
 }
 
+// ---- Storage usage: last used times, the usage-over-time chart and the usage map --------------------------------------------
+const AGE_SOURCE = { atime: "last read", mtime: "last written", created: "created" };
+const ageNote = (u) => `${AGE_SOURCE[u[1]] || u[1]} (${u[1]}), ${new Date(u[0] * 1000).toLocaleString()}`;
+// u: [seconds, atime|mtime|created] from the server, else null. The source stays beside the time, because an mtime is a push time.
+function usedEl(u) {
+  if (!u) return el("span", { className: "mut", textContent: "unknown" });
+  return el("span", { title: ageNote(u) }, ago(u[0]), el("span", { className: "src", textContent: " " + u[1] }));
+}
+const usedCell = (u) => el("td", { className: "mut nw" }, usedEl(u));
+async function loadAges(n) { // the ages of every tag in a repository, from the last usage scan
+  if (!cfg.storageMount || !cfg.usage) return;
+  try { n.ages = (await api("/api/ages?repo=" + encodeURIComponent(n.path))).tags; } catch (e) { n.ages = {}; }
+}
+
+// Squarified treemap (Bruls, Huizing, van Wijk): sizes largest first, all above 0. Returns one {x, y, w, h} per size, in order, that
+// tile the w by h box with areas in proportion to the sizes and rows as close to square as the order allows.
+function squarify(sizes, w, h) {
+  const total = sizes.reduce((a, b) => a + b, 0);
+  if (!(total > 0) || !(w > 0) || !(h > 0)) return sizes.map(() => ({ x: 0, y: 0, w: 0, h: 0 }));
+  const areas = sizes.map((s) => (s * w * h) / total), out = [];
+  const worst = (row, side) => {
+    const sum = row.reduce((a, b) => a + b, 0);
+    return Math.max((side * side * Math.max(...row)) / (sum * sum), (sum * sum) / (side * side * Math.min(...row)));
+  };
+  let x = 0, y = 0, rw = w, rh = h, i = 0;
+  while (i < areas.length) {
+    const side = Math.min(rw, rh), row = [areas[i]];
+    let j = i + 1;
+    while (j < areas.length && worst([...row, areas[j]], side) <= worst(row, side)) row.push(areas[j++]);
+    const sum = row.reduce((a, b) => a + b, 0);
+    if (rw >= rh) { // a column down the left edge
+      const cw = sum / rh;
+      let cy = y;
+      for (const a of row) { out.push({ x, y: cy, w: cw, h: a / cw }); cy += a / cw; }
+      x += cw; rw -= cw;
+    } else { // a row along the top edge
+      const rowH = sum / rw;
+      let cx = x;
+      for (const a of row) { out.push({ x: cx, y, w: a / rowH, h: rowH }); cx += a / rowH; }
+      y += rowH; rh -= rowH;
+    }
+    i = j;
+  }
+  return out;
+}
+// The age classes of the map: the newest use of anything under a node. Stale data is the red end.
+const AGE_STEPS = [[7, "under 7 days"], [30, "7 to 30 days"], [90, "30 to 90 days"], [180, "90 to 180 days"], [Infinity, "over 180 days"]];
+function ageClass(used, nowSecs) {
+  if (!used) return "a-none";
+  const days = Math.max(0, (nowSecs - used[0]) / 86400);
+  return "a" + AGE_STEPS.findIndex(([limit]) => days < limit);
+}
+function limitKids(kids, max) { // the largest `max`, and one tile for the rest
+  const live = kids.filter((k) => k.size > 0);
+  if (live.length <= max) return live;
+  const rest = live.slice(max - 1);
+  const used = rest.map((k) => k.used).filter(Boolean).sort((a, b) => b[0] - a[0])[0] || null;
+  return [...live.slice(0, max - 1), { name: `${rest.length} smaller`, size: rest.reduce((a, k) => a + k.size, 0), used, kids: [] }];
+}
+const MAP_W = 960, MAP_H = 420, MAP_TILES = 60;
+const usageView = { path: [] }; // names from the top of the map to the node shown; kept while the pane redraws
+function mapNode(tree0) { // the node the path leads to, else the top
+  let n = tree0;
+  const walked = [];
+  for (const name of usageView.path) {
+    const k = n.kids.find((x) => x.name === name);
+    if (!k) break;
+    n = k;
+    walked.push(name);
+  }
+  usageView.path = walked;
+  return n;
+}
+function tileAction(k, redraw) { // drill into a node with a level below it, open a tag, else nothing
+  if (k.tag) return () => { location.hash = `#/repo/${k.repo}:${k.tag}`; };
+  if (k.kids?.length) return () => { usageView.path.push(k.name); redraw(); };
+  return null;
+}
+function treemapSvg(node, nowSecs, redraw) {
+  const kids = limitKids(node.kids, MAP_TILES), boxes = squarify(kids.map((k) => k.size), MAP_W, MAP_H);
+  const svg = document.createElementNS(SVGNS, "svg");
+  svg.setAttribute("viewBox", `0 0 ${MAP_W} ${MAP_H}`);
+  svg.setAttribute("class", "treemap");
+  svg.setAttribute("role", "group");
+  svg.setAttribute("aria-label", "Usage map: space by size, colour by last use");
+  kids.forEach((k, i) => {
+    const b = boxes[i], act = tileAction(k, redraw);
+    const g = document.createElementNS(SVGNS, "svg"); // a nested svg clips its label to the tile
+    for (const [a, v] of Object.entries({ x: b.x, y: b.y, width: b.w, height: b.h, class: "tile " + ageClass(k.used, nowSecs) + (act ? " go" : "") })) g.setAttribute(a, v);
+    const r = document.createElementNS(SVGNS, "rect");
+    for (const [a, v] of Object.entries({ x: 0, y: 0, width: b.w, height: b.h })) r.setAttribute(a, v);
+    const title = document.createElementNS(SVGNS, "title");
+    title.textContent = `${k.name}: ${size(k.size)}` + (k.used ? `, ${ageNote(k.used)}` : "");
+    g.append(title, r);
+    if (b.w > 64 && b.h > 34) {
+      const t = document.createElementNS(SVGNS, "text");
+      t.setAttribute("x", 6); t.setAttribute("y", 17);
+      t.textContent = k.name;
+      const t2 = document.createElementNS(SVGNS, "text");
+      t2.setAttribute("x", 6); t2.setAttribute("y", 32); t2.setAttribute("class", "sz");
+      t2.textContent = size(k.size);
+      g.append(t, t2);
+    }
+    if (act) {
+      g.setAttribute("tabindex", "0");
+      g.setAttribute("role", "button");
+      g.setAttribute("aria-label", `${k.name}, ${size(k.size)}`);
+      g.addEventListener("click", act);
+      g.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); act(); } });
+    }
+    svg.append(g);
+  });
+  return svg;
+}
+function ageLegend(hasAges) {
+  const chip = (cls, text) => el("span", { className: "legend" }, el("i", { className: "sw " + cls }), text);
+  return el("p", { className: "mut legendrow" }, "Colour is when anything under the tile was last used: ",
+    ...(hasAges ? AGE_STEPS.map(([, text], i) => chip("a" + i, text)) : [chip("a-none", "unknown, needs UI_REGISTRY_STORAGE_MOUNT")]));
+}
+function mapSection(u) {
+  const root = el("div"), nowSecs = Date.now() / 1000;
+  const draw = () => {
+    const node = mapNode(u.tree);
+    const trail = [{ name: "All", path: [] }, ...usageView.path.map((name, i) => ({ name, path: usageView.path.slice(0, i + 1) }))];
+    const crumb = el("nav", { className: "crumbs", "aria-label": "Map level" }, ...trail.map((c, i) => (i === trail.length - 1 ? el("span", { textContent: c.name })
+      : el("button", { type: "button", className: "linkbtn", textContent: c.name, onclick: () => { usageView.path = c.path; draw(); } }))));
+    const kids = limitKids(node.kids, MAP_TILES);
+    const rows = kids.map((k) => {
+      const act = tileAction(k, draw);
+      return el("tr", {}, el("td", {}, act ? el("button", { type: "button", className: "linkbtn", textContent: k.name, onclick: act }) : k.name), el("td", { textContent: size(k.size) }),
+        el("td", { className: "mut", textContent: node.size ? (100 * k.size / node.size).toFixed(1) + "%" : "" }), usedCell(k.used));
+    });
+    root.replaceChildren(crumb, treemapSvg(node, nowSecs, draw), ageLegend(!!u.mount),
+      el("table", { className: "usagetable" }, el("thead", {}, el("tr", {}, ...["Name", "Unique size", "Share", "Last used"].map((h) => el("th", { textContent: h })))), el("tbody", {}, ...rows)));
+  };
+  draw();
+  return [el("h3", { textContent: "Usage map" }),
+    el("p", { className: "mut", textContent: "Space by namespace, repository and tag. A layer that several tags use counts once, at the level that holds all of them, in a tile named shared. Tags on one digest are one tile. Click a tile to open it." }), root];
+}
+
+const CHART = { w: 960, h: 280, l: 74, r: 14, t: 12, b: 30 };
+function niceMax(v) { // a round upper bound for the y axis
+  const p = 10 ** Math.floor(Math.log10(Math.max(v, 1))), f = v / p;
+  return p * (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10);
+}
+function chartSeries(history) { // the total, the on-disk total when recorded, and the five largest repositories in the newest point
+  const last = history[history.length - 1];
+  const top = Object.entries(last.repos || {}).sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).slice(0, 5).map(([name]) => name);
+  return [{ name: "Total, unique blobs", cls: "s-total", pick: (p) => p.total },
+    ...(history.some((p) => p.disk != null) ? [{ name: "On disk", cls: "s-disk", pick: (p) => p.disk }] : []),
+    ...top.map((name, i) => ({ name, cls: "s-c" + i, pick: (p) => (p.repos || {})[name] ?? null }))];
+}
+function usageChart(history) {
+  const { w, h, l, r, t, b } = CHART, series = chartSeries(history);
+  const t0 = history[0].t, t1 = history[history.length - 1].t;
+  const max = niceMax(Math.max(...series.flatMap((s) => history.map((p) => s.pick(p) ?? 0))));
+  const X = (time) => l + (t1 === t0 ? (w - l - r) / 2 : ((time - t0) / (t1 - t0)) * (w - l - r));
+  const Y = (v) => t + (1 - v / max) * (h - t - b);
+  const svg = document.createElementNS(SVGNS, "svg");
+  svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
+  svg.setAttribute("class", "chart");
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", `Space used over time, ${history.length} points`);
+  const add = (tag, attrs, text) => {
+    const n = document.createElementNS(SVGNS, tag);
+    for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+    if (text !== undefined) n.textContent = text;
+    svg.append(n);
+  };
+  for (const f of [0, 0.5, 1]) {
+    add("line", { x1: l, x2: w - r, y1: Y(max * f), y2: Y(max * f), class: "grid" });
+    add("text", { x: l - 8, y: Y(max * f) + 4, class: "axis", "text-anchor": "end" }, size(max * f));
+  }
+  const day = (s) => new Date(s * 1000).toLocaleDateString();
+  add("text", { x: l, y: h - 8, class: "axis" }, day(t0));
+  add("text", { x: w - r, y: h - 8, class: "axis", "text-anchor": "end" }, day(t1));
+  for (const s of series) {
+    const pts = history.filter((p) => s.pick(p) != null);
+    if (pts.length > 1) add("polyline", { points: pts.map((p) => `${X(p.t).toFixed(1)},${Y(s.pick(p)).toFixed(1)}`).join(" "), class: "line " + s.cls });
+    else if (pts.length) add("circle", { cx: X(pts[0].t), cy: Y(s.pick(pts[0])), r: 3.5, class: "dot " + s.cls });
+  }
+  return [svg, el("p", { className: "mut legendrow" }, ...series.map((s) => el("span", { className: "legend" }, el("i", { className: "sw " + s.cls }), s.name)))];
+}
+function chartSection(u) {
+  const h = u.history;
+  const head = el("h3", { textContent: "Usage over time" });
+  if (!h.length) return [head, el("p", { className: "mut", textContent: "No scan has finished yet. The first one runs after the first full walk of the registry." })];
+  const hint = h.length < 2 ? "One point so far. A scan adds a point every " + Math.round(u.interval / 60) + " minutes; the line fills in from here." :
+    `${h.length} points, hourly for a week and daily after that, kept for 90 days. The repositories are the five largest now; a layer that two repositories share counts in each.`;
+  return [head, el("p", { className: "mut", textContent: hint }), ...usageChart(h)];
+}
+async function usagePane(seq) {
+  const u = await api("/api/usage");
+  if (seq !== paneSeq) return;
+  const lines = [];
+  if (u.updated) {
+    lines.push(`${size(u.total)} held by ${plural(u.tags, "tag")} in ${u.blobs} unique blobs.`);
+    lines.push(u.disk != null ? `${size(u.disk)} on disk in ${u.files} blobs.` + (u.disk > u.total ? " The difference is blobs no tag uses, which garbage collection frees." : "")
+      : "Sizes come from the manifests. Mount the registry storage read-only and set UI_REGISTRY_STORAGE_MOUNT to also see the on-disk total and when data was last used.");
+    lines.push(`Scanned ${ago(u.updated)}, every ${Math.round(u.interval / 60)} minutes.`);
+  } else lines.push("The first scan runs once the first full walk of the registry has finished.");
+  showMain(el("h2", {}, el("span", { className: "ico" }, icon("chart")), "Storage usage"), el("p", { className: "mut", textContent: lines.join(" ") }),
+    ...chartSection(u), ...(u.tree && u.tree.kids.length ? mapSection(u) : []));
+}
+
 // ---- Routing: #/ (registry), #/recent, #/dir/<path>, #/repo/<name>[:<tag>[@<digest>]] ---------------------------------------
 function parseHash() {
   let h = "/";
   try { h = decodeURIComponent(location.hash.slice(1)) || prefs.selected; } catch (e) { /* malformed escape: show the registry */ }
   const m = /^\/(?:repo|dir)\/([^:@]+)(?::([^@]+))?(?:@(.+))?$/.exec(h);
   if (h === "/recent") return { kind: "recent" };
+  if (h === "/usage") return { kind: "usage" };
   if (h === "/pypi") return { kind: "proot" };
   const py = /^\/pypi\/([^@]+)(?:@(.+))?$/.exec(h);
   if (py) return { kind: "pypi", key: py[1].toLowerCase().replace(/[-_.]+/g, "-"), version: py[2] };
@@ -1306,6 +1524,7 @@ function parseHash() {
 let navSeq = 0;
 async function resolve(r) {
   if (r.kind === "recent") return RECENT;
+  if (r.kind === "usage") return cfg.usage ? USAGE : tree.root;
   if (r.kind === "root") return tree.root;
   if (r.kind === "proot") return cfg.pypi ? tree.proot : null;
   if (r.kind === "pypi") {
@@ -1393,7 +1612,7 @@ function refreshTouched(touched, gap) { // reload the tags of every changed repo
   return Promise.all(jobs);
 }
 function leaveGoneNode() { // the selected node is gone: fall back to what holds it
-  if (!tree.sel || tree.sel === "recent" || tree.byId.has(tree.sel)) return;
+  if (!tree.sel || PSEUDO[tree.sel] || tree.byId.has(tree.sel)) return;
   const n = tree.byPath.get(pathFromId(tree.sel));
   location.hash = n ? hashOf(n) : "#/";
 }
@@ -2585,12 +2804,13 @@ setWidth(prefs.sidebar, false);
 for (const id of prefs.expanded) expanded.add(id);
 $("prefs").onclick = () => settings();
 $("help").onclick = () => helpPanel();
+$("usage").onclick = () => { location.hash = "#/usage"; };
 tree.root = { kind: "root", id: "root", name: "Registry", parent: null, kids: new Map(), sortedKids: null };
 tree.byId.set("root", tree.root);
 tree.proot = { kind: "proot", id: "proot", name: "PyPI", parent: null, kids: [] };
 tree.byId.set("proot", tree.proot);
 tree.names = [];
-try { cfg = await api("/api/config"); $("reg").textContent = cfg.registry; $("ver").textContent = `v${cfg.version} · ${cfg.revision.slice(0, 7)}`; banner(notice());
+try { cfg = await api("/api/config"); $("reg").textContent = cfg.registry; $("ver").textContent = `v${cfg.version} · ${cfg.revision.slice(0, 7)}`; banner(notice()); $("usage").hidden = !cfg.usage;
   if (cfg.login) $("who").replaceChildren(...(cfg.user ? [cfg.user, " ", el("a", { href: cfg.logout, textContent: "Log out", className: "btn" })] : [el("a", { href: cfg.login, textContent: "Log in", className: "btn" })]));
 }  catch (e) { banner(e.message, true); }
 expanded.add("root");
