@@ -1129,7 +1129,7 @@ function recentPane() {
   const page = shown || prefs.pageSize; // rows are built for the page shown only: a group can hold 20000 uploads
   const parts = [];
   if (showsType("containers")) parts.push((recent.persistent ? "Container history is saved to disk." : "Container history is in memory only and resets when the UI restarts.")
-    + ` Watching since ${new Date(recent.since * 1000).toLocaleString()}; times are when the UI saw the change.`);
+    + ` Watching since ${new Date(recent.since * 1000).toLocaleString()}. Rows without a mark are when the UI saw the change. Rows marked storage time or build time were already there at a start, and take their time from the registry's files or the image.`);
   if (cfg.pypi && showsType("python")) parts.push(pypi.denied ? "Log in to see Python uploads." : "Python upload times come from GitLab.");
   const empty = recent.baselined ? "No changes seen yet." : "Reading the registry for the first time.";
   showMain(el("h2", { textContent: "Recent changes" }), el("p", { className: "mut", textContent: parts.join(" ") }),
@@ -1563,8 +1563,8 @@ const repoTab = () => {
 };
 function repoTabs(n, tab) {
   if (!cfg.usage) return [];
-  const t = (label, href, on) => el("a", { role: "tab", href, className: on ? "on" : "", "aria-selected": String(on), textContent: label });
-  return [el("div", { role: "tablist", className: "tabs" }, t("Tags", hashOf(n), tab === "tags"), t("Storage", repoHash(n.path), tab === "storage"))];
+  const t = (label, href, on) => el("a", { role: "tab", href, "aria-selected": String(on), textContent: label });
+  return [el("div", { className: "tabbar" }, el("div", { role: "tablist", className: "tabs" }, t("Tags", hashOf(n), tab === "tags"), t("Storage", repoHash(n.path), tab === "storage")))];
 }
 // The tags to delete to keep the `keep` newest images. The registry deletes by digest, so images are ranked and every tag of an old one is picked.
 function allButNewest(rows, keep) {
