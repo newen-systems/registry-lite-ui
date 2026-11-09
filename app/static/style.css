@@ -99,6 +99,8 @@ input::placeholder { color:var(--mut); }
 .chev .i { margin:0; color:inherit; }
 
 /* Detail pane */
+.crumbrow { display:flex; align-items:center; gap:var(--s3); margin:0 0 var(--s3); } .crumbrow .crumbs { margin:0; }
+.up { display:inline-flex; align-items:center; gap:var(--s1); height:26px; padding:0 var(--s2); font-size:12.5px; } .up .i { margin:0; }
 .crumbs { margin:0 0 var(--s3); color:var(--mut); font-size:13px; }
 .crumbs > * + *::before { content:"/"; margin:0 var(--s2); color:var(--line2); }
 .crumbs > .t::before { content:none; margin:0; }
