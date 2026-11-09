@@ -56,3 +56,13 @@ test("deleting tags frees the layers every user of which goes", () => {
   assert.deepEqual(freedBytes(detail, new Set(["a", "a2", "c"])), { bytes: 50, extra: 0, digests: 2 });
   assert.deepEqual(freedBytes(detail, new Set()), { bytes: 0, extra: 0, digests: 0 });
 });
+
+test("all but the newest N keeps whole images, never half of a digest", () => {
+  const allButNewest = load("allButNewest");
+  const rows = [
+    { tag: "1.0", digest: "d1", pushed: 100 }, { tag: "latest", digest: "d3", pushed: 50 }, { tag: "1.2", digest: "d3", pushed: 300 },
+    { tag: "1.1", digest: "d2", pushed: 200 }, { tag: "old", digest: "d0", pushed: 10 }, { tag: "old2", digest: "d0" },
+  ];
+  assert.deepEqual([...allButNewest(rows, 2)].sort(), ["1.0", "old", "old2"]); // d3 (newest at 300) and d2 stay with every tag, d1 and d0 go
+  assert.deepEqual([...allButNewest(rows, 10)], []);
+});

@@ -312,18 +312,25 @@ def routes(cfg):
         return {"interval": cfg.usage_interval, "history": cfg.state.usage_history(), "fs": U.fs_usage(cfg.storage_mount) if cfg.storage_mount else None,
                 **({k: snap[k] for k in keep} if snap else {"updated": None})}
 
+    pushed_cache = {}
+
     def storage_repo(q):  # the rows of a repository's Storage tab, from the latest scan
         repo = R.check_repo(one(q, "repo"))
         snap = cfg.usage.snapshot() if cfg.usage else None
         if not snap:
             return {"updated": None, "blobs": [], "tags": []}
-        pushed = {}
-        for ref, v in list(cfg.state.tags.items()):
-            if P.repo_of(ref) == repo:
-                tag = ref.rpartition(":")[2]
-                links = [h["time"] for h in R.tag_history(cfg.storage_mount, repo, tag) if h["digest"] == v["digest"]] if cfg.storage_mount else []
-                pushed[tag] = links[0] if links else int(v["changed"])
-        return {"updated": snap["updated"], **U.repo_detail(snap, snap["by_digest"], repo, pushed)}
+        if pushed_cache.get("updated") != snap["updated"]:
+            pushed_cache.clear()  # one set of tag link reads per scan, not per request
+            pushed_cache["updated"] = snap["updated"]
+        if repo not in pushed_cache:
+            pushed = {}
+            for ref, v in list(cfg.state.tags.items()):
+                if P.repo_of(ref) == repo:
+                    tag = ref.rpartition(":")[2]
+                    links = [h["time"] for h in R.tag_history(cfg.storage_mount, repo, tag) if h["digest"] == v["digest"]] if cfg.storage_mount else []
+                    pushed[tag] = links[0] if links else int(v["changed"])
+            pushed_cache[repo] = pushed
+        return {"updated": snap["updated"], **U.repo_detail(snap, snap["by_digest"], repo, pushed_cache[repo])}
 
     def disk(q):  # the filesystem of the registry storage, cheap enough to ask at every sync
         return {"fs": U.fs_usage(cfg.storage_mount) if cfg.storage_mount else None}

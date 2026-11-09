@@ -1372,6 +1372,7 @@ function loadStorage(force) {
   if (!force && storage.data && Date.now() - storage.at < 60000) return Promise.resolve(storage.data);
   storageLoading ??= api("/api/usage").then((u) => {
     storage.data = u; storage.fs = u.fs; storage.at = Date.now();
+    storageUI.gone.clear(); // rows hidden after a delete come back with the scan, which no longer has them or still does
     storage.paths = pathSizes(u.tree);
     storage.max = Math.max(0, ...[...storage.paths.values()].map((p) => p.size));
     drawDisk();
@@ -1485,15 +1486,15 @@ function storageTable(u, redraw) {
   const walk = (n, depth, key) => {
     const kids = n.kids.length ? order(n.kids) : [], open = storageUI.open.has(key);
     const isTag = !!n.tag, isRepo = !!n.repo && !isTag;
-    const toggle = kids.length ? el("button", { type: "button", className: "linkbtn chevbtn", "aria-expanded": String(open), "aria-label": `${open ? "Collapse" : "Expand"} ${n.name}`,
+    const toggle = kids.length ? el("button", { type: "button", className: "linkbtn chevbtn", "data-fk": "c:" + key, "aria-expanded": String(open), "aria-label": `${open ? "Collapse" : "Expand"} ${n.name}`,
       onclick: () => { if (open) storageUI.open.delete(key); else storageUI.open.add(key); redraw(); } }, icon("chev", open ? "open" : "")) : el("span", { className: "chevgap" });
     const name = isRepo ? el("a", { href: repoHash(n.repo), textContent: n.name }) : isTag ? el("a", { href: `#/repo/${n.repo}:${n.tag}`, textContent: n.name }) : el("span", { textContent: n.name });
     const actions = [];
     if (isRepo) actions.push(el("a", { href: repoHash(n.repo), textContent: "Select tags" }));
-    if (isTag && canWrite()) actions.push(el("button", { type: "button", className: "danger", textContent: "Delete", onclick: () => void deleteManifest(n.repo, n.tag, n.digest, async () => { storageUI.gone.add(n.digest); banner("Deleted. Sizes update at the next usage scan."); redraw(); }) }));
+    if (isTag && canWrite()) actions.push(el("button", { type: "button", className: "danger", textContent: "Delete", onclick: () => void deleteManifest(n.repo, n.tag, n.digest, async () => { storageUI.gone.add(`${n.repo}@${n.digest}`); banner("Deleted. Sizes update at the next usage scan."); redraw(); }) }));
     const indent = el("span", { className: "indent" }, toggle);
     indent.style.paddingLeft = depth * 18 + "px";
-    if (!(isTag && storageUI.gone.has(n.digest))) rows.push(el("tr", { className: "depth" + depth },
+    if (!(isTag && storageUI.gone.has(`${n.repo}@${n.digest}`))) rows.push(el("tr", { className: "depth" + depth },
       el("td", { className: "nm" }, indent, name),
       el("td", { textContent: size(n.size) }), el("td", { className: "mut", textContent: size(Math.max(0, n.held - n.size)) }), el("td", { className: "mut", textContent: n.tags || "" }),
       usedCell(n.oldest), usedCell(n.newest), el("td", { className: "nw" }, ...actions)));
@@ -1502,7 +1503,7 @@ function storageTable(u, redraw) {
   for (const k of order(u.tree.kids)) if (k.size > 0 || k.tags) walk(k, 0, k.name);
   const head = STORAGE_COLS.map((c) => {
     const on = storageUI.sort.key === c.key;
-    return el("th", { "aria-sort": on ? (dir < 0 ? "descending" : "ascending") : "none" }, el("button", { type: "button", className: "thbtn", title: c.tip || "",
+    return el("th", { "aria-sort": on ? (dir < 0 ? "descending" : "ascending") : "none" }, el("button", { type: "button", className: "thbtn", title: c.tip || "", "data-fk": "s:" + c.key,
       onclick: () => { storageUI.sort = on ? { key: c.key, dir: -dir } : { key: c.key, dir: c.key === "name" || c.key === "oldest" ? 1 : -1 }; redraw(); } }, c.key === "oldest" ? ageHead() === "Last pulled" ? c.label : "Oldest push" : c.label, on ? icon("arrow", dir < 0 ? "desc" : "") : null));
   });
   return el("table", { className: "storagetable" }, el("thead", {}, el("tr", {}, ...head, el("th", {}))), el("tbody", {}, ...rows));
@@ -1527,7 +1528,7 @@ async function storagePane(seq) {
       stale ? el("div", { className: "mut", textContent: "What garbage collection frees if all of them go." }) : null),
     card("Untagged layers (GC frees now)", u.unreferenced != null ? size(u.unreferenced) : "needs the storage mount", u.unreferenced != null ? null : el("div", { className: "mut", textContent: "Set UI_REGISTRY_STORAGE_MOUNT." })),
     growthCard(u.history));
-  const redraw = () => void body();
+  const redraw = () => keepFocus(holder, () => void body());
   const holder = el("div");
   const legend = el("span", { className: "legendrow" }, `${ageHead()}:`, ...(u.mount ? AGE_STEPS.map(([, text], i) => el("span", { className: "legend" }, el("i", { className: "sw a" + i }), text)) : [el("span", { className: "legend" }, el("i", { className: "sw a-none" }), "unknown, needs the storage mount")]));
   const toggleBtn = (view, text) => el("button", { type: "button", className: "segbtn", "aria-pressed": String(storageUI.view === view), textContent: text, onclick: () => { storageUI.view = view; void paint(); } });
@@ -1544,7 +1545,7 @@ async function storagePane(seq) {
     return body();
   };
   await paint();
-  const note = u.atime === false ? " Access time is not being recorded on this storage (noatime, or an NFS server that does not update it), so ages are push times." : "";
+  const note = u.atime === false ? " No layer has an access time newer than its write time, so ages are push times: either access time is not recorded on this storage (noatime, or an NFS server that does not update it) or nothing has been pulled since it was pushed." : "";
   showMain(el("nav", { className: "crumbs", "aria-label": "Path" }, el("a", { href: "#/", textContent: (cfg.registry || "Registry").replace(/^https?:\/\//, "") }), el("span", { textContent: "Storage" })),
     el("div", { className: "storagehead" }, el("h2", { textContent: "Storage" }),
       el("span", { className: "mut", textContent: `${size(u.total)} in ${plural(u.tags, "tag")} across ${plural(repos.length, "repository", "repositories")}. Sizes count each layer once. Scanned ${ago(u.updated)}.${note}` })),
@@ -1555,11 +1556,28 @@ async function storagePane(seq) {
 async function loadDetail(n) {
   try { n.detail = await api("/api/storage/repo?repo=" + encodeURIComponent(n.path)); } catch (e) { n.detail = null; n.detailErr = e.message; }
 }
-const repoTab = () => (/\?tab=storage$/.test(location.hash) && cfg.usage ? "storage" : "tags");
+const repoTab = () => {
+  let h = location.hash;
+  try { h = decodeURIComponent(h); } catch (e) { /* the raw hash is tested */ }
+  return /\?tab=storage$/.test(h) && cfg.usage ? "storage" : "tags";
+};
 function repoTabs(n, tab) {
   if (!cfg.usage) return [];
   const t = (label, href, on) => el("a", { role: "tab", href, className: on ? "on" : "", "aria-selected": String(on), textContent: label });
   return [el("div", { role: "tablist", className: "tabs" }, t("Tags", hashOf(n), tab === "tags"), t("Storage", repoHash(n.path), tab === "storage"))];
+}
+// The tags to delete to keep the `keep` newest images. The registry deletes by digest, so images are ranked and every tag of an old one is picked.
+function allButNewest(rows, keep) {
+  const newest = new Map();
+  for (const t of rows) newest.set(t.digest, Math.max(newest.get(t.digest) ?? 0, t.pushed ?? 0));
+  const kept = new Set([...newest].sort((a, b) => b[1] - a[1]).slice(0, keep).map(([d]) => d));
+  return new Set(rows.filter((t) => !kept.has(t.digest)).map((t) => t.tag));
+}
+// A redraw replaces the control that has focus, so focus the new control with the same data-fk.
+function keepFocus(box, fn) {
+  const key = document.activeElement?.dataset?.fk;
+  fn();
+  if (key) box.querySelector(`[data-fk="${CSS.escape(key)}"]`)?.focus();
 }
 const STALE_OPTIONS = [["180", "Not used in 180 days"], ["90", "Not used in 90 days"], ["30", "Not used in 30 days"], ["keep10", "All but the newest 10"], ["none", "None"]];
 function repoStorage(n) {
@@ -1585,7 +1603,7 @@ function repoStorage(n) {
   const max = cfg.maxBatch || 100;
   const choose = el("select", { "aria-label": "Quick select", onchange: () => {
     const v = choose.value;
-    st.picked = v === "none" ? new Set() : v === "keep10" ? new Set([...rows].sort((a, b) => (b.pushed ?? 0) - (a.pushed ?? 0)).slice(10).map((t) => t.tag)) : staleNames(Number(v));
+    st.picked = v === "none" ? new Set() : v === "keep10" ? allButNewest(rows, 10) : staleNames(Number(v));
     draw();
   } }, el("option", { value: "", textContent: "Choose..." }), ...STALE_OPTIONS.map(([v, text]) => el("option", { value: v, textContent: v === "180" || v === "90" || v === "30" ? text.replace("used", word) : text })));
   const cols = [
@@ -1594,20 +1612,21 @@ function repoStorage(n) {
     { key: "used", label: ageHead(), tip: USED_TIP, val: (t) => t.used?.[0] ?? null, cmp: numCmp }, { key: "pushed", label: "Pushed", val: (t) => t.pushed ?? null, cmp: numCmp },
   ];
   const holder = el("div", { className: "tablebox" }), sel = el("div", { className: "selbar" });
-  const draw = () => {
+  const draw = () => keepFocus(holder, paintRows);
+  const paintRows = () => {
     const col = cols.find((c) => c.key === st.sort.key);
     const list = sortItems(rows, col, st.sort.dir, (a, b) => tagCompare(b.tag, a.tag));
     const head = cols.map((c) => {
       const on = st.sort.key === c.key;
-      return el("th", { "aria-sort": on ? (st.sort.dir < 0 ? "descending" : "ascending") : "none" }, el("button", { type: "button", className: "thbtn", title: c.tip || "",
+      return el("th", { "aria-sort": on ? (st.sort.dir < 0 ? "descending" : "ascending") : "none" }, el("button", { type: "button", className: "thbtn", title: c.tip || "", "data-fk": "s:" + c.key,
         onclick: () => { st.sort = on ? { key: c.key, dir: -st.sort.dir } : { key: c.key, dir: c.key === "tag" || c.key === "used" ? 1 : -1 }; draw(); } }, c.label, on ? icon("arrow", st.sort.dir < 0 ? "desc" : "") : null));
     });
-    const all = el("input", { type: "checkbox", "aria-label": "Select every tag", checked: list.length > 0 && list.every((t) => st.picked.has(t.tag)),
+    const all = el("input", { type: "checkbox", "aria-label": "Select every tag", "data-fk": "all", checked: list.length > 0 && list.every((t) => st.picked.has(t.tag)),
       onchange: () => { for (const t of list) if (all.checked) st.picked.add(t.tag); else st.picked.delete(t.tag); draw(); } });
     const tr = (t) => {
       const on = st.picked.has(t.tag);
       const stale = on || (t.used && t.used[0] < cut(180));
-      const b = el("input", { type: "checkbox", checked: on, "aria-label": `Select ${t.tag}`, onchange: () => { if (b.checked) st.picked.add(t.tag); else st.picked.delete(t.tag); draw(); } });
+      const b = el("input", { type: "checkbox", checked: on, "aria-label": `Select ${t.tag}`, "data-fk": "t:" + t.tag, onchange: () => { if (b.checked) st.picked.add(t.tag); else st.picked.delete(t.tag); draw(); } });
       const bar = el("span", { className: "sbar" }, el("span", { className: "sfill" + (stale ? " old" : "") }));
       bar.firstChild.style.width = Math.round((100 * (t.frees / sum)) / top) + "%";
       bar.title = `${((100 * t.frees) / sum).toFixed(1)}% of what this repository's tags free`;
@@ -1624,7 +1643,7 @@ function repoStorage(n) {
       el("span", { textContent: `Frees about ${size(f.bytes)} after garbage collection. Layers other tags still use are kept.` + (f.extra ? ` ${plural(f.extra, "more tag")} on the same digest go too.` : "") + (k > max ? ` At most ${max} at once.` : "") }),
       el("span", { className: "grow" }), el("button", { type: "button", textContent: "Clear", onclick: () => { st.picked.clear(); choose.value = ""; draw(); } }), ...(canWrite() ? [go] : []));
   };
-  draw();
+  paintRows();
   return [cards, el("div", { className: "bar" }, el("label", { className: "mut" }, "Select ", choose), el("span", { className: "mut", textContent: `Sorted by ${st.sort.key === "used" ? `last ${word}, oldest first` : st.sort.key}.`
     + (gone ? ` ${plural(gone, "tag")} deleted since the scan.` : "") + (u?.updated ? ` Scanned ${ago(u.updated)}.` : "") })), holder, sel];
 }

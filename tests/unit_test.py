@@ -2253,3 +2253,16 @@ class SeedRecentLater(unittest.TestCase):
         p = P.Poller(reg, st)
         p.cycle()
         self.assertEqual((list(st.events), st.baselined, p.created), ([], True, {}))  # nothing remembered, so a tag on that digest is tried again
+
+
+class StorageNoFold(unittest.TestCase):
+    def test_every_repository_stays_listed_and_only_a_repositorys_tags_fold(self):
+        n = U.MAX_LEAVES + 5
+        tags = {f"ns/r{i}:t": D(format(i, "x")) for i in range(1, n)}
+        r = U.analyse(tags, {D(format(i, "x")): {D(f"b{i}"): i} for i in range(1, n)})
+        (ns,) = r["tree"]["kids"]
+        self.assertEqual(len(ns["kids"]), n - 1)  # no "other" node among the repositories
+        many = {f"r:{i}": D(format(i, "x")) for i in range(1, n)}
+        (repo,) = U.analyse(many, {D(format(i, "x")): {D(f"b{i}"): i} for i in range(1, n)})["tree"]["kids"][0]["kids"]
+        self.assertEqual(len(repo["kids"]), U.MAX_LEAVES)
+        self.assertTrue(repo["kids"][-1]["name"].startswith("other ("))

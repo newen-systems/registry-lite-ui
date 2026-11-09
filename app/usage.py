@@ -245,8 +245,10 @@ def analyse(tags, blobs_by_digest, ages=None):
             n["oldest"] = n["newest"] = list(n["used"])
         n["used"] = list(n["used"]) if n["used"] else None
     settle(top)
-    for n in nodes.values():
-        n["kids"] = folded(sorted(n["kids"], key=lambda k: (-k["size"], k["name"])))
+    for key, n in nodes.items():  # only the tags of a repository are folded: every folder and repository stays listed
+        n["kids"] = sorted(n["kids"], key=lambda k: (-k["size"], k["name"]))
+        if key and key[0] == "r":
+            n["kids"] = folded(n["kids"])
     return {"total": top["size"], "repos": per_repo, "tree": top, "ages": out_ages, "holders": holders, "sizes": sizes, "leaves": leaves,
             "leaf_age": leaf_age}
 
