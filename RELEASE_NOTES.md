@@ -4,6 +4,12 @@ registry-lite-ui is a web UI for a plain `registry:2` that browses, copies, move
 
 `podman-compose up -d` with `compose.yml` (registry and UI), or `podman-compose -f compose.ui.yml up -d` with `REGISTRY_URL` set for a registry that already runs. `docker compose` works the same way. Pin `UI_IMAGE` to a version or a digest in your `.env`.
 
+## Changes in 0.2.30
+
+### New Features
+
+- Recycle bin: Delete, Delete selected and the source of a Move keep each removed tag, its digest, media type, size and manifest bytes in the state file, and the Bin page (header) lists them with Restore, Delete forever and Empty bin. Restore pushes the same manifest back to its tag after checking every layer with a HEAD, and fails with a clear message if garbage collection already removed one, or if the tag now points at another digest. `UI_BIN_DAYS` sets the retention (default 7), `0` deletes at once as before, and `UI_READONLY` and a missing login refuse the bin actions ([#48](https://github.com/newen-systems/registry-lite-ui/pull/48))
+
 ## Changes in 0.2.29
 
 ### New Features

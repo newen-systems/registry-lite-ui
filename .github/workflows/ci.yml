@@ -39,6 +39,19 @@ jobs:
           curl -fs localhost:8080/api/recent | jq -e '.persistent and (.events | map(.ref) | index("ci/busybox:2") != null)'
           curl -fs localhost:8080/api/config | jq -e '.pypi == null'
           test "$(curl -s -o /dev/null -w '%{http_code}' localhost:8080/api/pypi/packages)" = 404
+          # Bin: delete a tag, find it in the bin, restore it, pull it
+          csrf=$(curl -fs localhost:8080/api/config | jq -r .csrf)
+          dg=$(curl -fs 'localhost:8080/api/tags?repo=ci/busybox' | jq -r '.[] | select(.tag=="2") | .digest')
+          post() { curl -fs -X POST "localhost:8080$1" -H 'Content-Type: application/json' -H "X-CSRF-Token: $csrf" -d "$2"; }
+          post /api/delete "{\"repo\":\"ci/busybox\",\"digest\":\"$dg\"}" | jq -e '.deleted | length >= 1'
+          curl -fs 'localhost:8080/api/tags?repo=ci/busybox' | jq -e 'map(.tag) | index("2") == null'
+          id=$(curl -fs localhost:8080/api/bin | jq -r '.entries[] | select(.tag=="2") | .id')
+          test -n "$id"
+          post /api/bin/restore "{\"id\":\"$id\"}" | jq -e '.tag == "2" and .digest == "'"$dg"'"'
+          docker rmi localhost:5000/ci/busybox:2 || true
+          docker pull localhost:5000/ci/busybox:2
+          curl -fs localhost:8080/api/bin | jq -e '[.entries[].tag] == ["1"]'
+          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST localhost:8080/api/bin/empty -H 'Content-Type: application/json' -d '{}')" = 403
           docker compose down -v
       - name: PyPI source smoke test against a fake GitLab
         run: |

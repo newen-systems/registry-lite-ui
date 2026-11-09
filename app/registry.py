@@ -301,14 +301,17 @@ def reaches(c, repo, cache, target, d, depth):
     return None
 
 
-def survey(c, repo, digest):
+def survey(c, repo, digest, same=None):
     """One pass over the tags of repo, right before a delete of digest. Returns (parents, kept): the tagged indexes
     that list digest as a child, directly or through up to MAX_DEPTH nested indexes, with the platform, and the digests
-    that other tagged manifests keep alive. An index no tag reaches cannot be found from the API."""
+    that other tagged manifests keep alive. An index no tag reaches cannot be found from the API. A list passed as `same` is
+    filled with the tags that point at digest itself."""
     cache, parents, kept = {}, {}, set()
     for tag in c.tags(repo):
         _, mtype, dg = c.manifest(repo, tag, head=True)
         if dg == digest:
+            if same is not None:
+                same.append(tag)
             continue
         kept.add(dg)
         if mtype in INDEX_TYPES:
@@ -330,9 +333,10 @@ def refuse_parents(parents, digest):
                               "deleting it would break that index. Delete or retag the index first.")[:MAX_MESSAGE])
 
 
-def delete(c, repo, digest, with_children=False):
+def delete(c, repo, digest, with_children=False, bin=None):
     """Delete a manifest by digest. Refused (409) while a tagged index uses it as a child. With with_children, also
-    delete index children no other tagged manifest in the repo uses."""
+    delete index children no other tagged manifest in the repo uses. A bin (see bin.py) is told what goes, after the checks
+    and before the first DELETE, so the manifest can be put back; it forgets the record if the first DELETE is refused."""
     check_repo(repo)
     if not DIGEST_RE.fullmatch(digest):
         raise RegistryError(400, "delete takes a digest")
@@ -340,18 +344,27 @@ def delete(c, repo, digest, with_children=False):
         raise RegistryError(405, DELETE_OFF)
     data, mtype, _ = c.manifest(repo, digest)
     orphans = set(children(data, mtype)) if with_children else set()
-    parents, kept = survey(c, repo, digest)  # one pass, right before the DELETE calls; a push after it can still race
+    same = []
+    parents, kept = survey(c, repo, digest, same)  # one pass, right before the DELETE calls; a push after it can still race
     refuse_parents(parents, digest)
     gone = [digest, *sorted(orphans - kept)]
-    for d in gone:
-        c.call("DELETE", f"/v2/{repo}/manifests/{d}", ok=(202,))
+    record = bin.record(c, repo, digest, data, mtype, same) if bin else None
+    removed = 0
+    try:
+        for d in gone:
+            c.call("DELETE", f"/v2/{repo}/manifests/{d}", ok=(202,))
+            removed += 1
+    except RegistryError as e:
+        if record and not removed and 400 <= e.status < 500:  # refused outright, so nothing to put back. A timeout may have gone through, and a half-done delete too: both keep the record
+            bin.discard(record)
+        raise
     return gone
 
 
 MAX_BATCH = 100  # tags one delete-tags call takes; each runs the checks of a single delete
 
 
-def delete_tags(c, repo, tags, with_children=False):
+def delete_tags(c, repo, tags, with_children=False, bin=None):
     """Delete the digests of several tags, one delete() each with all its checks, indexes first. Returns one result per tag:
     deleted, skipped (the tag is already gone) or failed with the reason. Tags that share a digest are one delete: the
     later ones get the same result, naming the tag it went with. A tagged index child is never removed with_children,
@@ -380,7 +393,7 @@ def delete_tags(c, repo, tags, with_children=False):
             out[tag] = {"tag": tag, "digest": digest, "status": first["status"], **({"error": first["error"]} if "error" in first else {"with": first["tag"]})}
             continue
         try:
-            done[digest] = {"tag": tag, "digest": digest, "status": "deleted", "deleted": delete(c, repo, digest, with_children)}
+            done[digest] = {"tag": tag, "digest": digest, "status": "deleted", "deleted": delete(c, repo, digest, with_children, bin)}
         except RegistryError as e:
             done[digest] = {"tag": tag, "digest": digest, "status": "failed", "error": e.message}
         out[tag] = done[digest]
@@ -428,7 +441,7 @@ def tag_history(mount, repo, tag):
     return sorted(out, key=lambda h: (-h["time"], h["digest"]))[:MAX_HISTORY]
 
 
-def move(c, src, src_ref, dst, dst_ref):
+def move(c, src, src_ref, dst, dst_ref, bin=None):
     """Copy, check the destination digest matches, then delete the source digest."""
     if src == dst:
         raise RegistryError(400, "move needs two repositories: registry:2 deletes by digest, which would remove both tags")
@@ -439,4 +452,4 @@ def move(c, src, src_ref, dst, dst_ref):
     digest = copy(c, src, src_ref, dst, dst_ref)
     if c.manifest(dst, dst_ref, head=True)[2] != digest:
         raise RegistryError(502, "destination digest differs, source kept")
-    return delete(c, src, digest, with_children=True)
+    return delete(c, src, digest, with_children=True, bin=bin)

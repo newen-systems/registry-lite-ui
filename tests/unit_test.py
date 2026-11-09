@@ -16,6 +16,7 @@ import urllib.parse
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
 import poller as P  # noqa: E402
 import usage as U  # noqa: E402
+import bin as B  # noqa: E402
 import registry as R  # noqa: E402
 import server as S  # noqa: E402
 import gitlab as G  # noqa: E402
@@ -1831,3 +1832,216 @@ class UsageRetry(unittest.TestCase):
         self.assertEqual(u.scan()["total"], 0)
         up[0] = True
         self.assertEqual(u.scan()["total"], len(image) + 3)
+
+
+class MemClient:
+    """A registry in memory: tags, manifests and blobs, with the calls the bin makes."""
+    def __init__(self):
+        self.tag_map, self.store, self.blobs, self.puts, self.fail_delete = {}, {}, set(), [], 0
+
+    def add(self, repo, body, mtype, tags=()):
+        digest = R.hashed(body, "sha256:")
+        self.store[digest] = (body, mtype)
+        for t in tags:
+            self.tag_map.setdefault(repo, {})[t] = digest
+        return digest
+
+    def tags(self, repo):
+        return list(self.tag_map.get(repo, {}))
+
+    def manifest(self, repo, ref, head=False):
+        digest = self.tag_map.get(repo, {}).get(ref, ref)
+        if digest not in self.store:
+            raise R.RegistryError(404, "unknown")
+        body, mtype = self.store[digest]
+        return body, mtype, digest
+
+    def delete_enabled(self):
+        return True
+
+    def call(self, method, path, headers=None, body=None, ok=(200,)):
+        repo, _, ref = path[4:].partition("/manifests/")
+        if method == "DELETE":
+            if self.fail_delete:
+                raise R.RegistryError(self.fail_delete, "boom")
+            self.store.pop(ref, None)
+            self.tag_map[repo] = {t: d for t, d in self.tag_map[repo].items() if d != ref}
+        elif method == "PUT":
+            digest = R.hashed(body, "sha256:")
+            self.puts.append((repo, ref))
+            self.store[digest] = (body, headers["Content-Type"])
+            if not R.DIGEST_RE.fullmatch(ref):
+                self.tag_map.setdefault(repo, {})[ref] = digest
+        return 201, {}, b""
+
+    def open(self, method, path):
+        class Resp:
+            status = 200 if path.rsplit("/", 1)[1] in self.blobs else 404
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+        return Resp()
+
+
+def image_body(*layers):
+    return json.dumps({"config": {"digest": D("c"), "size": 3}, "layers": [{"digest": d, "size": 10} for d in layers]}).encode()
+
+
+class RecycleBin(unittest.TestCase):
+    def setUp(self):
+        self.clk = Clock()
+        self.state = P.State(clock=self.clk)
+        self.bin = B.Bin(self.state, 7, clock=self.clk)
+        self.c = MemClient()
+        self.c.blobs = {D("c"), D("1"), D("2")}
+        self.digest = self.c.add("a/app", image_body(D("1"), D("2")), IMG, ["1", "latest"])
+
+    def test_delete_goes_to_the_bin_one_entry_per_tag_and_restore_puts_the_same_bytes_back(self):
+        before = self.c.store[self.digest][0]
+        R.delete(self.c, "a/app", self.digest, bin=self.bin)
+        self.assertEqual(self.c.tags("a/app"), [])
+        got = self.bin.list()
+        self.assertEqual(sorted((e["tag"], e["digest"], e["size"]) for e in got), [("1", self.digest, 23), ("latest", self.digest, 23)])
+        out = self.bin.restore(self.c, next(e["id"] for e in got if e["tag"] == "1"))
+        self.assertEqual(out, {"repo": "a/app", "tag": "1", "digest": self.digest})
+        self.assertEqual(self.c.tag_map["a/app"], {"1": self.digest})
+        self.assertEqual(self.c.store[self.digest][0], before)  # the same bytes, so the same digest
+        self.assertEqual([e["tag"] for e in self.bin.list()], ["latest"])
+        self.assertEqual(self.c.puts, [("a/app", "1")])
+
+    def test_restore_checks_every_blob_and_changes_nothing_when_one_is_gone(self):
+        R.delete(self.c, "a/app", self.digest, bin=self.bin)
+        self.c.blobs.discard(D("2"))  # garbage collection ran
+        with self.assertRaises(R.RegistryError) as e:
+            self.bin.restore(self.c, self.bin.list()[0]["id"])
+        self.assertEqual(e.exception.status, 409)
+        self.assertIn("garbage collection already removed 1 blob", e.exception.message)
+        self.assertEqual((self.c.puts, len(self.bin.list())), ([], 2))
+
+    def test_restore_refuses_a_tag_that_points_elsewhere_now(self):
+        R.delete(self.c, "a/app", self.digest, bin=self.bin)
+        other = self.c.add("a/app", image_body(D("1")), IMG, ["1"])
+        with self.assertRaises(R.RegistryError) as e:
+            self.bin.restore(self.c, next(x["id"] for x in self.bin.list() if x["tag"] == "1"))
+        self.assertEqual(e.exception.status, 409)
+        self.assertEqual(self.c.tag_map["a/app"]["1"], other)
+
+    def test_an_index_comes_back_with_its_children_first(self):
+        k1, k2 = self.c.add("a/app", image_body(D("1")), IMG), self.c.add("a/app", image_body(D("2")), IMG)
+        index = ('{"manifests":[{"digest":"%s"},{"digest":"%s"}]}' % (k1, k2)).encode()
+        top = self.c.add("a/app", index, IDX, ["multi"])
+        self.c.puts.clear()
+        R.delete(self.c, "a/app", top, with_children=True, bin=self.bin)
+        self.assertNotIn(k1, self.c.store)
+        (entry,) = [e for e in self.bin.list() if e["tag"] == "multi"]
+        self.assertEqual(entry["manifests"], 3)
+        self.bin.restore(self.c, entry["id"])
+        self.assertEqual(self.c.puts[-1], ("a/app", "multi"))  # the tag last
+        self.assertEqual({p[1] for p in self.c.puts[:-1]}, {k1, k2})
+        self.assertEqual(self.c.tag_map["a/app"]["multi"], top)
+
+    def test_entries_expire_after_the_retention(self):
+        R.delete(self.c, "a/app", self.digest, bin=self.bin)
+        self.clk.now += 6 * 86400
+        self.assertEqual(len(self.bin.list()), 2)
+        self.clk.now += 2 * 86400
+        self.assertEqual(self.bin.list(), [])
+        self.assertEqual(self.state.bin, [])  # dropped from the state as well
+        with self.assertRaises(R.RegistryError):
+            self.bin.restore(self.c, "gone")
+
+    def test_a_refused_delete_leaves_no_entry_but_a_timeout_keeps_it(self):
+        self.c.fail_delete = 403
+        with self.assertRaises(R.RegistryError):
+            R.delete(self.c, "a/app", self.digest, bin=self.bin)
+        self.assertEqual(self.bin.list(), [])
+        self.c.fail_delete = 502  # the registry may have processed it
+        with self.assertRaises(R.RegistryError):
+            R.delete(self.c, "a/app", self.digest, bin=self.bin)
+        self.assertEqual(len(self.bin.list()), 2)
+        self.c.fail_delete = 0
+        self.bin.restore(self.c, self.bin.list()[0]["id"])  # the tag is still there with the same digest: the push is harmless
+
+    def test_manifests_are_stored_once_per_digest_and_forgotten_with_their_last_entry(self):
+        R.delete(self.c, "a/app", self.digest, bin=self.bin)
+        self.assertEqual(list(self.state.binm), [self.digest])  # two tags, one stored manifest
+        one, other = [e["id"] for e in self.bin.list()]
+        self.bin.purge(one)
+        self.assertEqual(list(self.state.binm), [self.digest])
+        self.bin.purge(other)
+        self.assertEqual(self.state.binm, {})
+
+    def test_the_stored_manifests_are_capped_by_size_oldest_entry_first(self):
+        old = P.MAX_BIN_BYTES
+        self.addCleanup(setattr, P, "MAX_BIN_BYTES", old)
+        P.MAX_BIN_BYTES = 500
+        d1 = self.c.add("b", image_body(D("1")), IMG, ["x"])
+        d2 = self.c.add("b", image_body(D("1"), D("2")), IMG, ["y"])
+        R.delete(self.c, "b", d1, bin=self.bin)
+        self.clk.now += 1
+        R.delete(self.c, "b", d2, bin=self.bin)
+        self.assertEqual([e["tag"] for e in self.bin.list()], ["y"])  # the older one made room
+        self.assertEqual(list(self.state.binm), [d2])
+
+    def test_an_index_that_cannot_be_kept_whole_is_deleted_without_an_entry(self):
+        k1 = self.c.add("a/app", image_body(D("1")), IMG)
+        gone = "sha256:" + "9" * 64  # a child the registry cannot return
+        index = ('{"manifests":[{"digest":"%s"},{"digest":"%s"}]}' % (k1, gone)).encode()
+        top = self.c.add("a/app", index, IDX, ["broken"])
+        out = R.delete(self.c, "a/app", top, with_children=True, bin=self.bin)  # no KeyError, no refusal
+        self.assertIn(top, out)
+        self.assertEqual([e for e in self.bin.list() if e["tag"] == "broken"], [])
+
+    def test_purge_and_empty_only_forget_entries(self):
+        R.delete(self.c, "a/app", self.digest, bin=self.bin)
+        one, other = [e["id"] for e in self.bin.list()]
+        self.bin.purge(one)
+        self.assertEqual([e["id"] for e in self.bin.list()], [other])
+        with self.assertRaises(R.RegistryError):
+            self.bin.purge(one)
+        self.assertEqual(self.bin.empty(), 1)
+        self.assertEqual(self.bin.list(), [])
+
+    def test_bulk_delete_and_move_use_the_bin(self):
+        out = R.delete_tags(self.c, "a/app", ["1"], bin=self.bin)
+        self.assertEqual(out[0]["status"], "deleted")
+        self.assertEqual(sorted(e["tag"] for e in self.bin.list()), ["1", "latest"])  # the digest's other tag went too
+        c2 = MemClient()
+        d2 = c2.add("src", image_body(D("1")), IMG, ["x"])
+        c2.blobs = {D("c"), D("1")}
+        R.move(c2, "src", "x", "dst", "y", bin=self.bin)
+        self.assertEqual([(e["repo"], e["tag"]) for e in self.bin.list() if e["repo"] == "src"], [("src", "x")])
+        self.assertEqual(c2.tag_map["dst"]["y"], d2)
+
+    def test_the_bin_survives_a_restart_and_bad_entries_are_dropped(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d)
+        path = os.path.join(d, "state.json")
+        st = P.State(path, clock=self.clk)
+        b = B.Bin(st, 7, clock=self.clk)
+        R.delete(self.c, "a/app", self.digest, bin=b)
+        st.save(force=True)
+        again = B.Bin(P.State(path, clock=self.clk), 7, clock=self.clk)
+        self.assertEqual(len(again.list()), 2)
+        with open(path) as f:
+            doc = json.load(f)
+        doc["bin"].append({"id": "x", "repo": "../bad", "tag": "t"})
+        doc["bin"].append({**doc["bin"][0], "id": "y", "kids": ["sha256:" + "8" * 64]})  # names a manifest that is not stored
+        with open(path, "w") as f:
+            json.dump(doc, f)
+        self.assertEqual(len(B.Bin(P.State(path, clock=self.clk), 7, clock=self.clk).list()), 2)
+        doc["binm"][self.digest]["b64"] = "!!not base64"
+        with open(path, "w") as f:
+            json.dump(doc, f)
+        self.assertEqual(len(B.Bin(P.State(path, clock=self.clk), 7, clock=self.clk).list()), 0)
+
+    def test_bin_off_deletes_as_before_and_readonly_refuses_the_actions(self):
+        self.assertIsNone(S.Config({"UI_BIN_DAYS": "0"}).bin)
+        self.assertEqual(S.Config({}).bin.days, 7)
+        cfg = S.Config({"UI_BIN_DAYS": "0"})
+        cfg.client = self.c
+        with self.assertRaises(R.RegistryError) as e:
+            S.routes(cfg)[1]["/api/bin/empty"]({})
+        self.assertEqual(e.exception.status, 404)
+        self.assertEqual(S.routes(cfg)[0]["/api/bin"]({}), {"days": 0, "entries": []})
+        for path in ("/api/bin/restore", "/api/bin/delete", "/api/bin/empty"):
+            self.assertIn(path, S.routes(cfg)[1])  # mutate() refuses every POST route in read-only mode and without a login
