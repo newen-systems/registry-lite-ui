@@ -8,8 +8,8 @@ let checked = null; // when the server last finished a walk of the registry
 
 // Preferences only, no data or secrets. Storage may be blocked, so every access is guarded.
 // expanded and selected are the tree state (node ids and the location hash), sidebar is its width in px.
-const DEFAULTS = { theme: "system", repoSort: "name", tagSort: "recent", packageSort: "name", live: true, refresh: 0, interval: 30, pageSize: 50, runtime: "podman", showEmpty: false, treeSizes: false, notify: false, tool: "pip", os: "linux", show: "all", sidebar: 280, selected: "/recent", expanded: [] };
-const CHOICES = { theme: ["system", "light", "dark"], repoSort: ["name", "recent"], tagSort: ["recent", "version"], packageSort: ["name", "recent"], runtime: ["podman", "docker"], tool: ["pip", "uv"], os: ["linux", "windows"], show: ["all", "containers", "helm", "python"], interval: [10, 30, 60, 300], refresh: [0, 10, 15, 30, 60], pageSize: [25, 50, 100, 200] };
+const DEFAULTS = { theme: "system", repoSort: "name", tagSort: "recent", packageSort: "name", live: true, refresh: 0, interval: 30, pageSize: 50, runtime: "podman", showEmpty: false, treeSizes: false, mapBy: "total", notify: false, tool: "pip", os: "linux", show: "all", sidebar: 280, selected: "/recent", expanded: [] };
+const CHOICES = { mapBy: ["total", "frees"], theme: ["system", "light", "dark"], repoSort: ["name", "recent"], tagSort: ["recent", "version"], packageSort: ["name", "recent"], runtime: ["podman", "docker"], tool: ["pip", "uv"], os: ["linux", "windows"], show: ["all", "containers", "helm", "python"], interval: [10, 30, 60, 300], refresh: [0, 10, 15, 30, 60], pageSize: [25, 50, 100, 200] };
 const MAX_EXPANDED = 500;
 const SIDEBAR = [180, 640];
 let prefs = { ...DEFAULTS };
@@ -91,6 +91,7 @@ const ICONS = {
   clock: [["s", "M8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2zM8 4.8V8l2.2 1.4"]],
   pkg: [["s", "M8 1.8l5.5 3v6.4L8 14.2l-5.5-3V4.8zM2.5 4.8L8 7.8l5.5-3M8 7.8v6.4"]],
   drive: [["s", "M3 4.5h10A1.5 1.5 0 0 1 14.5 6v4a1.5 1.5 0 0 1-1.5 1.5H3A1.5 1.5 0 0 1 1.5 10V6A1.5 1.5 0 0 1 3 4.5zM1.5 8.2h13M11.2 9.9h.01M13 9.9h.01"]], // a hard drive: a box, a rule, two lights
+  left: [["s", "M13 8H3.5M7.5 4L3.5 8l4 4"]], // back: an arrow to the left
   tag: [["s", "M2 2.5h5.2l6.3 6.3-4.7 4.7L2.5 7.2V2.5zM5 5h.01"]],
   pypi: [["", "M8 1.5l5.6 3.1L8 7.7 2.4 4.6z"], ["s", "M2.4 5.5v5.9L8 14.5V8.6zM13.6 5.5v5.9L8 14.5"]],
 };
@@ -1472,19 +1473,32 @@ function nodeAt(top, path) {
   return n;
 }
 // Blocks under `min` of the total become one block, so no label is squeezed into a few pixels. Returns the blocks, largest first.
-function groupSmall(kids, total, min) {
-  const live = kids.filter((k) => k.size > 0).sort((a, b) => b.size - a.size);
-  const small = live.filter((k) => k.size < total * min);
+function groupSmall(kids, total, min, weight = (k) => k.size) {
+  const live = kids.filter((k) => weight(k) > 0).sort((a, b) => weight(b) - weight(a));
+  const small = live.filter((k) => weight(k) < total * min);
   if (small.length < 2 || small.length === live.length) return live; // nothing to group, or everything is small and a single block would hide it all
   const rest = live.filter((k) => !small.includes(k));
   const olds = small.map((k) => k.oldest).filter(Boolean).sort((a, b) => a[0] - b[0]);
-  return [...rest, { name: `${small.length} smaller items`, kind: "other", size: small.reduce((a, k) => a + k.size, 0), held: 0, tags: small.reduce((a, k) => a + (k.tags || 0), 0), oldest: olds[0] || null, newest: null, kids: [], names: small.map((k) => k.name) }]
-    .sort((a, b) => b.size - a.size);
+  const sum = (f) => small.reduce((a, k) => a + (f(k) || 0), 0);
+  return [...rest, { name: `${small.length} smaller items`, kind: "other", size: sum((k) => k.size), held: sum((k) => k.held), tags: sum((k) => k.tags), oldest: olds[0] || null, newest: null, kids: [], names: small.map((k) => k.name) }]
+    .sort((a, b) => weight(b) - weight(a));
 }
 // The shared crumb: the registry, then one link per path segment, the last one plain. items: [{text, href}]
 function crumbNav(root, items) {
-  return el("nav", { className: "crumbs", "aria-label": "Path" }, el("a", { href: "#/", textContent: root }),
+  const nav = el("nav", { className: "crumbs", "aria-label": "Path" }, el("a", { href: "#/", textContent: root }),
     ...items.map((x, i) => (i === items.length - 1 ? el("span", { className: x.cls || "", textContent: x.text }) : el("a", { href: x.href, className: x.cls || "", textContent: x.text }))));
+  if (!items.length) return nav; // the registry itself has nowhere to go up to
+  return el("div", { className: "crumbrow" }, el("button", { type: "button", className: "up", title: "Up one level", onclick: () => goUp(items, location) }, icon("left"), "Up"), nav);
+}
+// Where Up goes: the crumb before the last one, else the registry. Null at the registry.
+function upHref(items) {
+  if (!items.length) return null;
+  return items.length > 1 ? items[items.length - 2].href : "#/";
+}
+// Up is a plain hash assignment, so it adds a history entry and the browser's Back returns to the level just left.
+function goUp(items, loc) {
+  const href = upHref(items);
+  if (href) loc.hash = href;
 }
 // The segments of a path as crumb items, each linking to the map at that folder: "a/b" -> a, b.
 function pathCrumbs(path, base) {
@@ -1500,8 +1514,12 @@ const storagePath = () => { // the folder the map shows, from #/storage/<path>
 };
 const MAP_W = 1000, MAP_H = 480, MIN_BLOCK = 0.02;
 const typeWord = (t) => (t === "helm" ? "chart" : t === "artifact" ? "artifact" : "");
-function diskMap(u, node, nowSecs, onShared, onOther) {
-  const kids = groupSmall(node.kids, node.size, MIN_BLOCK), boxes = squarify(kids.map((k) => k.size), MAP_W, MAP_H);
+// by: "total" sizes a block by every byte it uses, shared layers included (so a repository whose layers are all shared still has a block, and
+// the "shared" blocks, which would count those layers twice, are left out), "frees" by the bytes only it holds, which deleting it frees.
+function diskMap(u, node, nowSecs, onShared, onOther, by = "total") {
+  const weight = by === "total" ? (k) => k.held : (k) => k.size;
+  const shown = node.kids.filter((k) => by === "frees" || k.kind !== "shared");
+  const kids = groupSmall(shown, shown.reduce((a, k) => a + weight(k), 0), MIN_BLOCK, weight), boxes = squarify(kids.map(weight), MAP_W, MAP_H);
   const box = el("div", { className: "dmap" });
   kids.forEach((k, i) => {
     const b = boxes[i], big = (b.w / MAP_W) * (b.h / MAP_H);
@@ -1514,9 +1532,10 @@ function diskMap(u, node, nowSecs, onShared, onOther) {
     tile.title = `${k.kind === "other" ? "Click to list them in the table. " : ""}${k.name}: ${size(k.size)} only ${k.kind === "other" ? "these hold" : "this holds"}${k.held > k.size ? `, ${size(k.held)} in all` : ""}${k.names ? `. ${k.names.slice(0, 12).join(", ")}${k.names.length > 12 ? " and more" : ""}` : ""}`;
     if (b.w < 80 || b.h < 22) { tile.setAttribute("aria-label", `${k.name}, ${size(k.size)}`); return box.append(tile); } // too small for a readable label: the tooltip and the screen reader name it
     tile.append(el("span", { className: "dname", textContent: k.name }));
-    if (b.w < 120 && big > 0.004) tile.append(el("span", { className: "dsub", textContent: size(k.size) }));
-    else if (big > 0.012) tile.append(el("span", { className: "dsub", textContent: `${size(k.size)}${k.tags && k.kind !== "tag" ? `, ${plural(k.tags, "tag")}` : ""}${typeWord(k.type) ? `, ${typeWord(k.type)}` : ""}` }), el("span", { className: "dsub", textContent: old }));
-    else if (big > 0.004) tile.append(el("span", { className: "dsub", textContent: size(k.size) }));
+    const shownSize = weight(k), what = by === "total" ? " total" : "";
+    if (b.w < 120 && big > 0.004) tile.append(el("span", { className: "dsub", textContent: size(shownSize) }));
+    else if (big > 0.012) tile.append(el("span", { className: "dsub", textContent: `${size(shownSize)}${what}${k.tags && k.kind !== "tag" ? `, ${plural(k.tags, "tag")}` : ""}${typeWord(k.type) ? `, ${typeWord(k.type)}` : ""}` }), el("span", { className: "dsub", textContent: old }));
+    else if (big > 0.004) tile.append(el("span", { className: "dsub", textContent: size(shownSize) }));
     box.append(tile);
   });
   return box;
@@ -1595,15 +1614,18 @@ async function storagePane(seq) {
       el("table", { className: "sortable" }, el("tbody", {}, ...sharerRows(k).map((r) => el("tr", {}, el("td", {}, r.path ? el("a", { href: `#/storage/${r.path}`, textContent: r.name }) : r.name), el("td", { textContent: size(r.size) }))))));
   };
   const body = () => {
-    holder.replaceChildren(storageUI.view === "map" ? diskMap(u, node, nowSecs, showShared, () => { storageUI.view = "table"; void paint(); }) : storageTable(u, node, redraw));
+    holder.replaceChildren(storageUI.view === "map" ? diskMap(u, node, nowSecs, showShared, () => { storageUI.view = "table"; void paint(); }, prefs.mapBy) : storageTable(u, node, redraw));
     return Promise.resolve();
   };
   const foot = el("p", { className: "mut" });
   const paint = () => {
     sharedBox.replaceChildren();
-    foot.replaceChildren(storageUI.view === "map" ? "Click a folder to open it, a repository to pick tags to delete. Area is unique bytes. A layer several items use counts once, in a block named for what shares it, at the lowest folder that holds them all."
+    foot.replaceChildren(storageUI.view === "map" ? `Click a folder to open it, a repository to pick tags to delete. ${prefs.mapBy === "total" ? "Area is every byte a block uses, so a layer used by two blocks counts in both and the blocks add up to more than the disk holds." : "Area is the bytes only a block holds, which deleting it frees. A layer several items use counts once, in a block named for what shares it, at the lowest folder that holds them all."}`
       : "Click a header to sort each level. Shared size is what a node uses that something outside it uses too.");
-    bar.replaceChildren(el("div", { role: "group", "aria-label": "View", className: "seg" }, toggleBtn("map", "Map"), toggleBtn("table", "Table")), legend);
+    const byBtn = (v, text, tip) => el("button", { type: "button", title: tip, "aria-pressed": String(prefs.mapBy === v), textContent: text, onclick: () => { prefs.mapBy = v; savePrefs(); void paint(); } });
+    bar.replaceChildren(el("div", { role: "group", "aria-label": "View", className: "seg" }, toggleBtn("map", "Map"), toggleBtn("table", "Table")),
+      ...(storageUI.view === "map" ? [el("label", { className: "mut" }, "Size by ", el("div", { role: "group", "aria-label": "Size by", className: "seg" },
+        byBtn("total", "Total", "Every byte the block uses, shared layers included"), byBtn("frees", "Frees", "Only the bytes that deleting it frees")))] : []), legend);
     return body();
   };
   await paint();
@@ -1611,7 +1633,7 @@ async function storagePane(seq) {
   const unread = u.unread?.count ? [el("p", { className: "hint", textContent: `${plural(u.unread.count, "tag")} could not be read and ${u.unread.count === 1 ? "is" : "are"} not counted (${u.unread.first.join(", ")}${u.unread.count > 5 ? ", ..." : ""}). The registry did not return their manifests.` })] : [];
   const pypi = cfg.pypi && !cfg.pypi.locked ? [el("p", { className: "mut", textContent: "Python packages are stored in GitLab, not on this registry's disk, so they are not counted here." })] : [];
   const hollow = node.kids.filter((k) => k.size === 0 && k.tags > 0).length;
-  const here = [...(hollow && storageUI.view === "map" ? [el("p", { className: "mut", textContent: `${plural(hollow, "item")} here hold no bytes of their own (every layer is shared), so the map has no block for ${hollow === 1 ? "it" : "them"}. The table lists ${hollow === 1 ? "it" : "them"}.` })] : []),
+  const here = [...(hollow && storageUI.view === "map" && prefs.mapBy === "frees" ? [el("p", { className: "mut", textContent: `${plural(hollow, "item")} here ${hollow === 1 ? "holds" : "hold"} no bytes of their own (every layer is shared), so this map has no block for ${hollow === 1 ? "it" : "them"}. Size by Total shows ${hollow === 1 ? "it" : "them"}, and so does the table.` })] : []),
     ...(shownPath ? [el("p", { className: "mut" }, `${size(node.size)} in ${plural(node.tags, "tag")} under ${shownPath}. `, ...(node.kind === "repo" ? [el("a", { href: repoHash(node.repo), textContent: "Open the repository" })] : []))] : [])];
   showMain(crumbNav(regLabel(), [{ text: "Storage", href: "#/storage" }, ...pathCrumbs(shownPath, "#/storage")]),
     el("div", { className: "storagehead" }, el("h2", { textContent: "Storage" }),

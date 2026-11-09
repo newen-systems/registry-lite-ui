@@ -135,3 +135,47 @@ test("grouping never hides a whole folder and keeps the blocks largest first", (
   const out = groupSmall([k("a", 100), ...Array.from({ length: 40 }, (_, i) => k("s" + i, 15)), k("b", 120)], 1000, 0.02);
   assert.deepEqual(out.map((x) => x.name), ["40 smaller items", "b", "a"]); // the group is 600: it sorts first
 });
+
+function loadWith(name, deps) { // a top-level function that calls other top-level functions: they are passed in by name
+  const start = src.indexOf(`\nfunction ${name}(`);
+  assert.ok(start >= 0, `function ${name} not found in app.js`);
+  const body = src.slice(start, src.indexOf("\n}\n", start) + 2);
+  return new Function(...Object.keys(deps), `${body}; return ${name};`)(...Object.values(deps));
+}
+class FakeNav { // location.hash and the history stack of a browser: a hash assignment adds an entry, back() steps to the one before
+  constructor(first) { this.stack = [first]; this.at = 0; }
+  get hash() { return this.stack[this.at]; }
+  set hash(v) { this.stack.splice(this.at + 1); this.stack.push(v); this.at++; }
+  back() { this.at--; }
+}
+
+test("Up goes to the parent folder and Back returns to the level just left", () => {
+  const upHref = load("upHref"), pathCrumbs = load("pathCrumbs");
+  const goUp = loadWith("goUp", { upHref });
+  const crumbs = (path) => [{ text: "Storage", href: "#/storage" }, ...pathCrumbs(path, "#/storage")];
+  assert.equal(upHref([]), null); // the registry has no parent
+  assert.equal(upHref(crumbs("")), "#/"); // the top of Storage goes up to the registry
+  const nav = new FakeNav("#/storage");
+  nav.hash = "#/storage/org"; // drill down, as a click on a block does
+  nav.hash = "#/storage/org/team-a";
+  goUp(crumbs("org/team-a"), nav);
+  assert.equal(nav.hash, "#/storage/org");
+  nav.back();
+  assert.equal(nav.hash, "#/storage/org/team-a"); // Back undoes the Up
+  nav.back();
+  assert.equal(nav.hash, "#/storage/org");
+  goUp([], nav); // at the registry Up does nothing and adds no entry
+  assert.equal(nav.stack.length, 4); // the drill-downs and the Up are the four entries
+});
+
+test("no navigation replaces the history entry, so Back always steps one level", () => {
+  assert.ok(!/history\.replaceState|location\.replace\(/.test(src));
+});
+
+test("sizing by total keeps a block for a repository whose layers are all shared", () => {
+  const groupSmall = load("groupSmall");
+  const k = (name, size, held) => ({ name, size, held, tags: 1, oldest: null, kids: [] });
+  const kids = [k("api", 50, 60), k("team-b", 0, 55), k("maven", 0, 40)];
+  assert.deepEqual(groupSmall(kids, 155, 0.02, (x) => x.held).map((x) => x.name), ["api", "team-b", "maven"]);
+  assert.deepEqual(groupSmall(kids, 50, 0.02).map((x) => x.name), ["api"]); // by frees they have nothing to draw
+});
