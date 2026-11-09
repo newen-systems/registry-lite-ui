@@ -90,6 +90,7 @@ const ICONS = {
   artifact: [["s", "M8 1.8l5.5 3v6.4L8 14.2l-5.5-3V4.8zM2.5 4.8L8 7.8l5.5-3M8 7.8v6.4"]],
   clock: [["s", "M8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2zM8 4.8V8l2.2 1.4"]],
   pkg: [["s", "M8 1.8l5.5 3v6.4L8 14.2l-5.5-3V4.8zM2.5 4.8L8 7.8l5.5-3M8 7.8v6.4"]],
+  drive: [["s", "M3 4.5h10A1.5 1.5 0 0 1 14.5 6v4a1.5 1.5 0 0 1-1.5 1.5H3A1.5 1.5 0 0 1 1.5 10V6A1.5 1.5 0 0 1 3 4.5zM1.5 8.2h13M11.2 9.9h.01M13 9.9h.01"]], // a hard drive: a box, a rule, two lights
   tag: [["s", "M2 2.5h5.2l6.3 6.3-4.7 4.7L2.5 7.2V2.5zM5 5h.01"]],
   pypi: [["", "M8 1.5l5.6 3.1L8 7.7 2.4 4.6z"], ["s", "M2.4 5.5v5.9L8 14.5V8.6zM13.6 5.5v5.9L8 14.5"]],
 };
@@ -471,7 +472,7 @@ const tops = () => [RECENT, ...(cfg.usage ? [STORAGE] : [])];
 function topEl(n, pos) { // the rows above the registry: Recent, and Storage with the fill of the disk
   const pct = n === STORAGE ? diskPct() : null;
   const row = el("div", { className: "row", role: "treeitem", id: "ti-" + n.id, tabIndex: tree.focus === n.id ? 0 : -1, "aria-level": 1, "aria-posinset": pos, "aria-setsize": topCount(), "aria-selected": String(tree.sel === n.id) },
-    el("span", { className: "chev" }), icon(n === STORAGE ? "chart" : "clock"), el("span", { className: "lbl", textContent: n.name }),
+    el("span", { className: "chev" }), icon(n === STORAGE ? "drive" : "clock"), el("span", { className: "lbl", textContent: n.name }),
     ...(pct === null ? [] : [el("span", { className: "nsz " + (pct >= 95 ? "crit" : pct >= 80 ? "warn" : ""), textContent: pct + "%" })]));
   row.dataset.id = n.id;
   return row;
@@ -1399,7 +1400,7 @@ function drawDisk() {
   const fill = el("span", { className: "dfill" });
   fill.style.width = pct + "%";
   b.className = pct >= 95 ? "crit" : pct >= 80 ? "warn" : "";
-  b.replaceChildren(el("span", { className: "dbar" }, fill), `Disk ${pct}%, ${size(storage.fs.used)} of ${size(storage.fs.total)}`);
+  b.replaceChildren(icon("drive"), el("span", { className: "dbar" }, fill), `Disk ${pct}%, ${size(storage.fs.used)} of ${size(storage.fs.total)}`);
   b.title = "Fill of the filesystem that holds the registry storage. Space freed by deleting comes back only after garbage collection.";
   scheduleTree(); // the Storage row shows the same percentage
 }
