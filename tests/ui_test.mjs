@@ -20,45 +20,49 @@ test("tags on one digest are marked wherever they sit in the list", () => {
   assert.deepEqual(digestLinks(["b"], counts({ b: 1 })), [null]);
 });
 
-test("the treemap tiles the box with areas in proportion to the sizes", () => {
-  const squarify = load("squarify");
-  const sizes = [600, 300, 200, 100, 50, 30, 10, 10];
-  const total = sizes.reduce((a, b) => a + b, 0), w = 960, h = 420;
-  const boxes = squarify(sizes, w, h);
-  assert.equal(boxes.length, sizes.length);
-  const eps = 1e-6;
-  boxes.forEach((b, i) => {
-    assert.ok(b.x >= -eps && b.y >= -eps && b.x + b.w <= w + eps && b.y + b.h <= h + eps, `tile ${i} inside the box`);
-    assert.ok(Math.abs(b.w * b.h - (sizes[i] / total) * w * h) < 1e-3, `tile ${i} area in proportion`);
-  });
-  assert.ok(Math.abs(boxes.reduce((a, b) => a + b.w * b.h, 0) - w * h) < 1e-3, "no gaps");
-  for (let i = 0; i < boxes.length; i++) { // no two tiles overlap
-    for (let j = i + 1; j < boxes.length; j++) {
-      const a = boxes[i], b = boxes[j];
-      assert.ok(a.x + a.w <= b.x + eps || b.x + b.w <= a.x + eps || a.y + a.h <= b.y + eps || b.y + b.h <= a.y + eps, `tiles ${i} and ${j} apart`);
-    }
-  }
-  assert.deepEqual(squarify([5], 10, 4), [{ x: 0, y: 0, w: 10, h: 4 }]); // one tile fills the box
-  assert.deepEqual(squarify([], 10, 4), []);
-  assert.deepEqual(squarify([0, 0], 10, 4), [{ x: 0, y: 0, w: 0, h: 0 }, { x: 0, y: 0, w: 0, h: 0 }]); // nothing to show
-  const worstRatio = Math.max(...squarify([4, 3, 2, 1], 100, 100).map((b) => Math.max(b.w / b.h, b.h / b.w)));
-  assert.ok(worstRatio < 3, "tiles stay near square");
-});
-
-test("the map shows the largest tiles and one for the rest", () => {
+test("the map shows the largest blocks and one for the rest", () => {
   const limitKids = load("limitKids");
-  const kids = [30, 20, 10, 5, 0].map((size, i) => ({ name: "k" + i, size, used: size === 5 ? [900, "atime"] : size === 10 ? [100, "mtime"] : null, kids: [] }));
+  const kids = [30, 20, 10, 5, 0].map((size, i) => ({ name: "k" + i, size, tags: 1, oldest: size === 5 ? [900, "atime"] : size === 10 ? [100, "mtime"] : null, kids: [] }));
   assert.deepEqual(limitKids(kids, 10).map((k) => k.name), ["k0", "k1", "k2", "k3"]); // an empty node is not drawn
   const cut = limitKids(kids, 3);
   assert.deepEqual(cut.map((k) => [k.name, k.size]), [["k0", 30], ["k1", 20], ["2 smaller", 15]]);
-  assert.deepEqual(cut[2].used, [900, "atime"]); // the newest use among the tiles it hides
+  assert.deepEqual([cut[2].oldest, cut[2].tags], [[100, "mtime"], 2]); // the stalest of the blocks it hides
 });
 
-test("the chart axis ends on a round number above the data", () => {
-  const niceMax = load("niceMax");
-  assert.equal(niceMax(0), 1);
-  assert.equal(niceMax(1), 1);
-  assert.equal(niceMax(1.2e9), 2e9);
-  assert.equal(niceMax(3.1e6), 5e6);
-  assert.equal(niceMax(7e6), 1e7);
+test("folder sizes add the repositories under them", () => {
+  const pathSizes = load("pathSizes");
+  const repo = (name, size, oldest) => ({ name, repo: name, size, oldest, kids: [] });
+  const top = { kids: [
+    { name: "ml", ns: "ml", size: 400, kids: [repo("ml/a", 100, [50, "atime"]), repo("ml/sub/b", 200, [20, "mtime"]), { name: "shared by repositories of ml", size: 100, oldest: [10, "mtime"], kids: [] }] },
+    { name: "(top level)", ns: "", size: 7, kids: [repo("solo", 7, null)] },
+    { name: "shared by namespaces", size: 40, kids: [] },
+  ] };
+  const m = pathSizes(top);
+  assert.deepEqual(m.get("ml"), { size: 400, oldest: [10, "mtime"] }); // two repositories and the layers shared inside it
+  assert.deepEqual(m.get("ml/sub"), { size: 200, oldest: [20, "mtime"] });
+  assert.deepEqual(m.get("ml/a"), { size: 100, oldest: [50, "atime"] });
+  assert.deepEqual(m.get("solo"), { size: 7, oldest: null });
+  assert.deepEqual([...m.keys()].sort(), ["ml", "ml/a", "ml/sub", "ml/sub/b", "solo"]); // the strip shared by namespaces has no path
+});
+
+test("deleting tags frees the layers every user of which goes", () => {
+  const freedBytes = load("freedBytes");
+  // blob 0 only 'a' holds, blob 1 is used by a and b, blob 2 by b and another repository, blob 3 only 'c'
+  const detail = { blobs: [[10, 1], [20, 2], [30, 2], [40, 1]], tags: [
+    { tag: "a", digest: "da", blobs: [0, 1] }, { tag: "a2", digest: "da", blobs: [] },
+    { tag: "b", digest: "db", blobs: [1, 2] }, { tag: "c", digest: "dc", blobs: [3] } ] };
+  assert.deepEqual(freedBytes(detail, new Set(["a"])), { bytes: 10, extra: 1, digests: 1 }); // a2 shares a's digest and goes too
+  assert.deepEqual(freedBytes(detail, new Set(["a", "b"])), { bytes: 10 + 20, extra: 1, digests: 2 }); // blob 1 goes now, blob 2 is still used elsewhere
+  assert.deepEqual(freedBytes(detail, new Set(["a", "a2", "c"])), { bytes: 50, extra: 0, digests: 2 });
+  assert.deepEqual(freedBytes(detail, new Set()), { bytes: 0, extra: 0, digests: 0 });
+});
+
+test("all but the newest N keeps whole images, never half of a digest", () => {
+  const allButNewest = load("allButNewest");
+  const rows = [
+    { tag: "1.0", digest: "d1", pushed: 100 }, { tag: "latest", digest: "d3", pushed: 50 }, { tag: "1.2", digest: "d3", pushed: 300 },
+    { tag: "1.1", digest: "d2", pushed: 200 }, { tag: "old", digest: "d0", pushed: 10 }, { tag: "old2", digest: "d0" },
+  ];
+  assert.deepEqual([...allButNewest(rows, 2)].sort(), ["1.0", "old", "old2"]); // d3 (newest at 300) and d2 stay with every tag, d1 and d0 go
+  assert.deepEqual([...allButNewest(rows, 10)], []);
 });

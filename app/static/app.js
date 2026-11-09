@@ -49,6 +49,7 @@ function el(tag, props, ...kids) {
 const short = (d) => (d || "").slice(0, 19);
 function size(n) {
   if (n == null) return "";
+  if (n >= 1099511627776) return (n / 1099511627776).toFixed(1) + " TiB";
   if (n >= 1073741824) return (n / 1073741824).toFixed(1) + " GiB";
   return n < 1048576 ? (n / 1024).toFixed(1) + " KiB" : (n / 1048576).toFixed(1) + " MiB";
 }
@@ -389,9 +390,9 @@ function dropManifests(path) {
 
 // ---- Tree rendering ----------------------------------------------------------------------------------------------
 const RECENT = { kind: "recent", id: "recent", name: "Recent" };
-const USAGE = { kind: "usage", id: "usage", name: "Usage" };
+const STORAGE = { kind: "storage", id: "storage", name: "Storage" };
 const BIN = { kind: "bin", id: "bin", name: "Bin" };
-const PSEUDO = { recent: RECENT, usage: USAGE, bin: BIN }; // views with a header link or a first tree row, not a node in the tree
+const PSEUDO = { recent: RECENT, storage: STORAGE, bin: BIN }; // views with a header link or a first tree row, not a node in the tree
 let rows = []; // visible entries, in order
 function visible() {
   rows = [];
@@ -447,16 +448,26 @@ function rowEl(r) {
     "aria-level": r.depth + 1, "aria-posinset": r.pos, "aria-setsize": r.count, "aria-selected": String(n.id === tree.sel),
   }, ...guides, el("span", { className: "chev" }, expandable(n) ? icon("chev") : null), iconFor(n, open), el("span", { className: "lbl", textContent: rowLabel(n) }));
   row.dataset.id = n.id;
+  const info = n.kind === "node" ? storage.paths.get(n.path) : null; // size and age of a folder or repository, with a thin bar against the largest
+  if (info && info.size > 0) {
+    row.append(el("span", { className: "nsz", textContent: size(info.size) }));
+    const bar = el("span", { className: "nbar " + ageClass(info.oldest, Date.now() / 1000) });
+    bar.style.width = Math.max(2, Math.round((100 * info.size) / (storage.max || 1))) + "%";
+    row.append(bar);
+  }
   if (expandable(n)) row.setAttribute("aria-expanded", String(open));
   const t = tree.flashes.get(n.id);
   if (t && Date.now() - t < 4000) { row.classList.add("flash"); row.style.animationDelay = `-${(Date.now() - t) / 1000}s`; }
   return row;
 }
-const topCount = () => 1 + (showsType("containers") ? 1 : 0) + (cfg.pypi && showsType("python") ? 1 : 0); // Recent plus each root shown
-function recentEl() {
-  const row = el("div", { className: "row", role: "treeitem", id: "ti-recent", tabIndex: tree.focus === "recent" ? 0 : -1, "aria-level": 1, "aria-posinset": 1, "aria-setsize": topCount(), "aria-selected": String(tree.sel === "recent") },
-    el("span", { className: "chev" }), icon("clock"), el("span", { className: "lbl", textContent: "Recent" }));
-  row.dataset.id = "recent";
+const topCount = () => 1 + (cfg.usage ? 1 : 0) + (showsType("containers") ? 1 : 0) + (cfg.pypi && showsType("python") ? 1 : 0); // Recent, Storage and each root shown
+const tops = () => [RECENT, ...(cfg.usage ? [STORAGE] : [])];
+function topEl(n, pos) { // the rows above the registry: Recent, and Storage with the fill of the disk
+  const pct = n === STORAGE ? diskPct() : null;
+  const row = el("div", { className: "row", role: "treeitem", id: "ti-" + n.id, tabIndex: tree.focus === n.id ? 0 : -1, "aria-level": 1, "aria-posinset": pos, "aria-setsize": topCount(), "aria-selected": String(tree.sel === n.id) },
+    el("span", { className: "chev" }), icon(n === STORAGE ? "chart" : "clock"), el("span", { className: "lbl", textContent: n.name }),
+    ...(pct === null ? [] : [el("span", { className: "nsz " + (pct >= 95 ? "crit" : pct >= 80 ? "warn" : ""), textContent: pct + "%" })]));
+  row.dataset.id = n.id;
   return row;
 }
 let rowCache = new Map(); // rows are reused between renders when nothing about them changed
@@ -464,7 +475,7 @@ let treeQueued = false;
 function scheduleTree() { if (!treeQueued) { treeQueued = true; requestAnimationFrame(() => { treeQueued = false; renderTree(); }); } }
 function rowSig(r) { // what a row looks like, so an unchanged one is reused
   const n = r.n;
-  const own = n ? [isOpen(n), n.kind === "node" && n.repo, n.id === tree.sel, n.id === tree.focus, rowLabel(n), expandable(n), n.kind === "tag" && tagKind(n)] : [];
+  const own = n ? [isOpen(n), n.kind === "node" && n.repo, n.id === tree.sel, n.id === tree.focus, rowLabel(n), expandable(n), n.kind === "tag" && tagKind(n), n.kind === "node" && storage.paths.has(n.path) && storage.paths.get(n.path).size + ":" + storage.max + ":" + ageClass(storage.paths.get(n.path).oldest, Math.floor(Date.now() / 1000))] : [];
   return [r.depth, r.anc.join(""), r.last, r.pos, r.count, ...own].join("|");
 }
 function cachedRow(r, keep) {
@@ -482,12 +493,12 @@ function renderTree() {
   const top = box.scrollTop;
   visible();
   const ids = new Set(rows.map((r) => (r.n ? r.n.id : "")));
-  ids.add("recent");
+  for (const t of tops()) ids.add(t.id);
   if (!tree.focus || !ids.has(tree.focus)) tree.focus = ids.has(tree.sel) ? tree.sel : "recent";
   const keep = new Map();
   const els = rows.map((r) => cachedRow(r, keep));
   rowCache = keep;
-  box.replaceChildren(recentEl(), ...els);
+  box.replaceChildren(...tops().map((t, i) => topEl(t, i + 1)), ...els);
   box.scrollTop = top;
   if (hadFocus) $("ti-" + tree.focus)?.focus();
 }
@@ -500,7 +511,7 @@ function select(id, reveal) {
 
 function hashOf(n) {
   if (n.kind === "recent") return "#/recent";
-  if (n.kind === "usage") return "#/usage";
+  if (n.kind === "storage") return "#/storage";
   if (n.kind === "bin") return "#/bin";
   if (n.kind === "proot") return "#/pypi";
   if (n.kind === "pkg") return "#/pypi/" + n.key;
@@ -532,7 +543,7 @@ $("tree").addEventListener("mouseover", (e) => {
 $("tree").addEventListener("click", (e) => {
   const row = rowOf(e.target);
   if (!row) return;
-  const n = row.dataset.id === "recent" ? RECENT : tree.byId.get(row.dataset.id);
+  const n = PSEUDO[row.dataset.id] || tree.byId.get(row.dataset.id);
   if (!n) return;
   if (e.target.closest(".chev")) {
     tree.focus = n.id;
@@ -584,7 +595,7 @@ function focusRow(n) {
 $("tree").addEventListener("keydown", (e) => {
   const row = rowOf(e.target);
   if (!row || e.altKey || e.ctrlKey || e.metaKey) return;
-  const list = [{ n: RECENT }, ...rows.filter((r) => r.n)];
+  const list = [...tops().map((t) => ({ n: t })), ...rows.filter((r) => r.n)];
   const i = list.findIndex((r) => r.n.id === row.dataset.id);
   if (e.key === "Enter" || e.key === " ") { e.preventDefault(); go(list[i].n); return; }
   const to = arrowTarget(e.key, list, i, treeOps);
@@ -1160,46 +1171,49 @@ function emptyRepoNote(n) {
   if (repoError(n.path)) return [note]; // never put an odd name into a command
   return [note, codeBlock("Remove the empty repository (registry stopped)", [rmRepoCommand(n.path)]), ...storageHint()];
 }
-function repoPane(n) {
+function repoPane(n, tab = "tags") {
+  const head = [crumbs(n), el("h2", {}, el("span", { className: "ico" }, icon("repo")), n.path), el("p", { className: "reporef" }, copyValue(`${cfg.registryHost || "<REGISTRY>"}/${n.path}`, "Copy repository reference")),
+    ...(n.err ? [el("p", { className: "mut", textContent: n.err })] : []), ...repoTabs(n, tab)];
+  if (tab === "storage") return showMain(...head, ...repoStorage(n));
   const tags = n.tagList.length ? tagsList(n) : n.err ? [] : emptyRepoNote(n); // an error (no tags yet, during a push) is not an empty repository to remove
   const kids = visibleKids(n).length ? [el("h3", { textContent: "Folders" }), ...childrenList(n)] : [];
-  showMain(crumbs(n), el("h2", {}, el("span", { className: "ico" }, icon("repo")), n.path), el("p", { className: "reporef" }, copyValue(`${cfg.registryHost || "<REGISTRY>"}/${n.path}`, "Copy repository reference")),
-    ...(n.err ? [el("p", { className: "mut", textContent: n.err })] : []), ...tags, ...kids, commandsEl(n.path, "", "", repoKind(n)));
+  showMain(...head, ...tags, ...kids, commandsEl(n.path, "", "", repoKind(n)));
 }
 function folderPane(n) {
   showMain(crumbs(n), el("h2", {}, el("span", { className: "ico" }, icon("folderOpen")), n.path), ...(visibleKids(n).length ? childrenList(n) : []));
 }
 
+// The tagged indexes this digest is a child of. The server refuses the delete or move anyway, this says so before the click.
+async function parentInfo(repo, digest) {
+  try {
+    return await api(`/api/parents?repo=${encodeURIComponent(repo)}&digest=${encodeURIComponent(digest)}`);
+  } catch (e) {
+    return null; // no warning then: the server refuses a bad delete or move itself
+  }
+}
+function blockText(r) {
+  if (!r?.parents.length) return "";
+  const plats = [...new Set(r.parents.map((p) => p.platform).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  const tags = r.parents.map((p) => p.tag).join(", ") + (r.more ? ` and ${r.more} more` : "");
+  return `This manifest is ${plats.length ? plats.join(", ") : "a child"} inside ${tags}. Delete or retag those first.`;
+}
+// Delete one manifest with the usual confirmation. `after` runs when it went, and by default opens the repository.
+async function deleteManifest(repo, ref, digest, after) {
+  let m;
+  try { m = await getManifest(repo, ref, digest, true); } catch (e) { banner(e.message, true); return; }
+  const info = await parentInfo(repo, digest);
+  const v = await confirmDelete({ repo, ref, digest, m, info, block: blockText(info) });
+  if (v) await run(() => api("/api/delete", { repo, digest, children: v.children }), async () => { await touch(repo); await (after || (() => { location.hash = "#/repo/" + repo; }))(); });
+}
 function actions(repo, ref, digest) {
-  // The tagged indexes this digest is a child of. The server refuses the delete or move anyway, this says so before the click.
-  const parentInfo = async () => {
-    try {
-      return await api(`/api/parents?repo=${encodeURIComponent(repo)}&digest=${encodeURIComponent(digest)}`);
-    } catch (e) {
-      return null; // no warning then: the server refuses a bad delete or move itself
-    }
-  };
-  const blockText = (r) => {
-    if (!r?.parents.length) return "";
-    const plats = [...new Set(r.parents.map((p) => p.platform).filter(Boolean))].sort((a, b) => a.localeCompare(b));
-    const tags = r.parents.map((p) => p.tag).join(", ") + (r.more ? ` and ${r.more} more` : "");
-    return `This manifest is ${plats.length ? plats.join(", ") : "a child"} inside ${tags}. Delete or retag those first.`;
-  };
   const copy = (move) => async () => {
     let m;
     try { m = await getManifest(repo, ref, digest, move); } catch (e) { banner(e.message, true); return; } // a move needs the authoritative tag list
-    const v = await transfer({ move, repo, ref, digest, m, sharing: move ? m.tags : [], block: move ? blockText(await parentInfo()) : "" });
+    const v = await transfer({ move, repo, ref, digest, m, sharing: move ? m.tags : [], block: move ? blockText(await parentInfo(repo, digest)) : "" });
     if (v) await run(() => api(move ? "/api/move" : "/api/copy", { src: repo, srcRef: ref, dst: v.dst, dstRef: v.dstRef }), async () => { await touch(repo, v.dst); location.hash = `#/repo/${v.dst}:${v.dstRef}`; });
   };
-  const del = async () => {
-    let m;
-    try { m = await getManifest(repo, ref, digest, true); } catch (e) { banner(e.message, true); return; }
-    const info = await parentInfo();
-    const v = await confirmDelete({ repo, ref, digest, m, info, block: blockText(info) });
-    if (v) await run(() => api("/api/delete", { repo, digest, children: v.children }), async () => { await touch(repo); location.hash = "#/repo/" + repo; });
-  };
   const b = (text, fn, cls) => el("button", { textContent: text, className: cls || "", onclick: fn });
-  return el("div", { className: "bar" }, ...(!canWrite() ? [] : [b("Copy to...", copy(false)), b("Move to...", copy(true)), b("Delete", del, "danger")]));
+  return el("div", { className: "bar" }, ...(!canWrite() ? [] : [b("Copy to...", copy(false)), b("Move to...", copy(true)), b("Delete", () => deleteManifest(repo, ref, digest), "danger")]));
 }
 
 const tableRow = (k, v) => el("tr", {}, el("th", { textContent: k }), el("td", {}, v));
@@ -1286,7 +1300,7 @@ async function drawPane(n, seq) {
   resetHidden();
   if (!n) return notFoundPane();
   if (n === RECENT) return recentPane();
-  if (n === USAGE) return usagePane(seq);
+  if (n === STORAGE) return storagePane(seq);
   if (n === BIN) return binPane(seq);
   if (n.kind === "root") return rootPane(n);
   if (n.kind === "proot") return prootPane(n);
@@ -1294,8 +1308,9 @@ async function drawPane(n, seq) {
   if (n.kind === "ver") return verPane(n);
   if (n.kind !== "node") return manifestPane(n, seq);
   if (!n.repo) return folderPane(n);
-  await Promise.all([ensureTags(n), loadAges(n)]);
-  if (seq === paneSeq) repoPane(n);
+  const tab = repoTab();
+  await Promise.all([ensureTags(n), loadAges(n), tab === "storage" ? Promise.all([loadStorage(), loadDetail(n)]) : null]);
+  if (seq === paneSeq) repoPane(n, tab);
 }
 async function renderPane(force) { // force: a setting changed under an open panel and the page behind it should show the effect
   if (!force && modalOpen()) { paneStale = true; return; }
@@ -1313,7 +1328,8 @@ function notice() {
   return memory + (cfg.deleteEnabled !== false ? "" : "Deletion is disabled on this registry (REGISTRY_STORAGE_DELETE_ENABLED is not true). Move and Delete will fail.");
 }
 
-// ---- Storage usage: last used times, the usage-over-time chart and the usage map --------------------------------------------
+// ---- Storage: the disk map, last used times and the repository Storage tab ---------------------------------------------------
+// The numbers come from the usage scan (usage.py): sizes count each layer once, at the lowest level that holds all of its users.
 const AGE_SOURCE = { atime: "last read", mtime: "last written", created: "created" };
 const ageNote = (u) => `${AGE_SOURCE[u[1]] || u[1]} (${u[1]}), ${new Date(u[0] * 1000).toLocaleString()}`;
 // u: [seconds, atime|mtime|created] from the server, else null. The source stays beside the time, because an mtime is a push time.
@@ -1327,195 +1343,309 @@ async function loadAges(n) { // the ages of every tag in a repository, from the 
   try { n.ages = (await api("/api/ages?repo=" + encodeURIComponent(n.path))).tags; } catch (e) { n.ages = {}; }
 }
 
-// Squarified treemap (Bruls, Huizing, van Wijk): sizes largest first, all above 0. Returns one {x, y, w, h} per size, in order, that
-// tile the w by h box with areas in proportion to the sizes and rows as close to square as the order allows.
-function squarify(sizes, w, h) {
-  const total = sizes.reduce((a, b) => a + b, 0);
-  if (!(total > 0) || !(w > 0) || !(h > 0)) return sizes.map(() => ({ x: 0, y: 0, w: 0, h: 0 }));
-  const areas = sizes.map((s) => (s * w * h) / total), out = [];
-  const worst = (row, side) => {
-    const sum = row.reduce((a, b) => a + b, 0);
-    return Math.max((side * side * Math.max(...row)) / (sum * sum), (sum * sum) / (side * side * Math.min(...row)));
+const storage = { data: null, fs: null, at: 0, paths: new Map(), max: 0 };
+let storageLoading = null;
+// Size and oldest last-used of every folder and repository, by path, from the map the server sends. A folder adds the repositories
+// under it, and a top-level folder also the layers shared inside it.
+function pathSizes(top) {
+  const out = new Map();
+  const add = (path, bytes, oldest) => {
+    const p = out.get(path) || { size: 0, oldest: null };
+    p.size += bytes;
+    if (oldest && (!p.oldest || oldest[0] < p.oldest[0])) p.oldest = oldest;
+    out.set(path, p);
   };
-  let x = 0, y = 0, rw = w, rh = h, i = 0;
-  while (i < areas.length) {
-    const side = Math.min(rw, rh), row = [areas[i]];
-    let j = i + 1;
-    while (j < areas.length && worst([...row, areas[j]], side) <= worst(row, side)) row.push(areas[j++]);
-    const sum = row.reduce((a, b) => a + b, 0);
-    if (rw >= rh) { // a column down the left edge
-      const cw = sum / rh;
-      let cy = y;
-      for (const a of row) { out.push({ x, y: cy, w: cw, h: a / cw }); cy += a / cw; }
-      x += cw; rw -= cw;
-    } else { // a row along the top edge
-      const rowH = sum / rw;
-      let cx = x;
-      for (const a of row) { out.push({ x: cx, y, w: a / rowH, h: rowH }); cx += a / rowH; }
-      y += rowH; rh -= rowH;
+  for (const ns of top?.kids || []) {
+    if (!("ns" in ns)) continue; // a layer shared by namespaces belongs to none of them
+    for (const k of ns.kids) {
+      if (k.repo) {
+        const parts = k.repo.split("/");
+        for (let i = 1; i < parts.length; i++) add(parts.slice(0, i).join("/"), k.size, k.oldest);
+        add(k.repo, k.size, k.oldest);
+      } else if (ns.ns) add(ns.ns, k.size, k.oldest); // shared inside the namespace
     }
-    i = j;
   }
   return out;
 }
-// The age classes of the map: the newest use of anything under a node. Stale data is the red end.
+function loadStorage(force) {
+  if (!cfg.usage) return Promise.resolve(null);
+  if (!force && storage.data && Date.now() - storage.at < 60000) return Promise.resolve(storage.data);
+  storageLoading ??= api("/api/usage").then((u) => {
+    storage.data = u; storage.fs = u.fs; storage.at = Date.now();
+    storageUI.gone.clear(); // rows hidden after a delete come back with the scan, which no longer has them or still does
+    storage.paths = pathSizes(u.tree);
+    storage.max = Math.max(0, ...[...storage.paths.values()].map((p) => p.size));
+    drawDisk();
+    scheduleTree();
+    return u;
+  }).catch(() => null).finally(() => { storageLoading = null; });
+  return storageLoading;
+}
+async function refreshDisk() { // the filesystem fill, which moves with every push and is cheap to ask
+  if (!cfg.storageMount) return;
+  try { storage.fs = (await api("/api/disk")).fs; drawDisk(); } catch (e) { /* the pill keeps what it shows */ }
+}
+const diskPct = () => (storage.fs?.total ? Math.round((100 * storage.fs.used) / storage.fs.total) : null);
+function drawDisk() {
+  const b = $("disk"), pct = diskPct();
+  b.hidden = pct === null;
+  if (pct === null) return;
+  const fill = el("span", { className: "dfill" });
+  fill.style.width = pct + "%";
+  b.className = pct >= 95 ? "crit" : pct >= 80 ? "warn" : "";
+  b.replaceChildren(el("span", { className: "dbar" }, fill), `Disk ${pct}%, ${size(storage.fs.used)} of ${size(storage.fs.total)}`);
+  b.title = "Fill of the filesystem that holds the registry storage. Space freed by deleting comes back only after garbage collection.";
+  scheduleTree(); // the Storage row shows the same percentage
+}
+
+// Age classes: how long ago the oldest tag under a node was used. Stale data is the red end.
 const AGE_STEPS = [[7, "under 7 days"], [30, "7 to 30 days"], [90, "30 to 90 days"], [180, "90 to 180 days"], [Infinity, "over 180 days"]];
 function ageClass(used, nowSecs) {
   if (!used) return "a-none";
   const days = Math.max(0, (nowSecs - used[0]) / 86400);
   return "a" + AGE_STEPS.findIndex(([limit]) => days < limit);
 }
-function limitKids(kids, max) { // the largest `max`, and one tile for the rest
+const ageDays = (used) => (used ? Math.max(0, Math.round((Date.now() / 1000 - used[0]) / 86400)) : null);
+function limitKids(kids, max) { // the largest `max` nodes with space, and one for the rest
   const live = kids.filter((k) => k.size > 0);
   if (live.length <= max) return live;
   const rest = live.slice(max - 1);
-  const used = rest.map((k) => k.used).filter(Boolean).sort((a, b) => b[0] - a[0])[0] || null;
-  return [...live.slice(0, max - 1), { name: `${rest.length} smaller`, size: rest.reduce((a, k) => a + k.size, 0), used, kids: [] }];
+  const olds = rest.map((k) => k.oldest).filter(Boolean).sort((a, b) => a[0] - b[0]);
+  return [...live.slice(0, max - 1), { name: `${rest.length} smaller`, size: rest.reduce((a, k) => a + k.size, 0), held: 0, tags: rest.reduce((a, k) => a + (k.tags || 0), 0), oldest: olds[0] || null, newest: null, kids: [] }];
 }
-const MAP_W = 960, MAP_H = 420, MAP_TILES = 60;
-const usageView = { path: [] }; // names from the top of the map to the node shown; kept while the pane redraws
-function mapNode(tree0) { // the node the path leads to, else the top
-  let n = tree0;
-  const walked = [];
-  for (const name of usageView.path) {
-    const k = n.kids.find((x) => x.name === name);
-    if (!k) break;
-    n = k;
-    walked.push(name);
-  }
-  usageView.path = walked;
-  return n;
+// What deleting some tags of a repository frees. detail: {blobs: [[size, holders]], tags: [{tag, digest, blobs}]} from /api/storage/repo, picked: tag names.
+// The registry deletes by digest, so every tag on a picked digest goes. A layer is freed when every image that uses it goes.
+function freedBytes(detail, picked) {
+  const digests = new Set(detail.tags.filter((t) => picked.has(t.tag)).map((t) => t.digest));
+  const count = new Map();
+  for (const t of detail.tags) if (digests.has(t.digest)) for (const i of t.blobs) count.set(i, (count.get(i) || 0) + 1);
+  let bytes = 0;
+  for (const [i, c] of count) if (c === detail.blobs[i][1]) bytes += detail.blobs[i][0];
+  const extra = detail.tags.filter((t) => digests.has(t.digest) && !picked.has(t.tag)).length;
+  return { bytes, extra, digests: digests.size };
 }
-function tileAction(k, redraw) { // drill into a node with a level below it, open a tag, else nothing
-  if (k.tag) return () => { location.hash = `#/repo/${k.repo}:${k.tag}`; };
-  if (k.kids?.length) return () => { usageView.path.push(k.name); redraw(); };
-  return null;
-}
-function treemapSvg(node, nowSecs, redraw) {
-  const kids = limitKids(node.kids, MAP_TILES), boxes = squarify(kids.map((k) => k.size), MAP_W, MAP_H);
+const ageWord = () => (storage.data?.atime === false ? "pushed" : "pulled"); // atime frozen: every age is a push time
+const ageHead = () => (storage.data?.atime === false ? "Push time (access time not recorded)" : "Last pulled");
+const sparkline = (points) => {
   const svg = document.createElementNS(SVGNS, "svg");
-  svg.setAttribute("viewBox", `0 0 ${MAP_W} ${MAP_H}`);
-  svg.setAttribute("class", "treemap");
-  svg.setAttribute("role", "group");
-  svg.setAttribute("aria-label", "Usage map: space by size, colour by last use");
-  kids.forEach((k, i) => {
-    const b = boxes[i], act = tileAction(k, redraw);
-    const g = document.createElementNS(SVGNS, "svg"); // a nested svg clips its label to the tile
-    for (const [a, v] of Object.entries({ x: b.x, y: b.y, width: b.w, height: b.h, class: "tile " + ageClass(k.used, nowSecs) + (act ? " go" : "") })) g.setAttribute(a, v);
-    const r = document.createElementNS(SVGNS, "rect");
-    for (const [a, v] of Object.entries({ x: 0, y: 0, width: b.w, height: b.h })) r.setAttribute(a, v);
-    const title = document.createElementNS(SVGNS, "title");
-    title.textContent = `${k.name}: ${size(k.size)}` + (k.used ? `, ${ageNote(k.used)}` : "");
-    g.append(title, r);
-    if (b.w > 64 && b.h > 34) {
-      const t = document.createElementNS(SVGNS, "text");
-      t.setAttribute("x", 6); t.setAttribute("y", 17);
-      t.textContent = k.name;
-      const t2 = document.createElementNS(SVGNS, "text");
-      t2.setAttribute("x", 6); t2.setAttribute("y", 32); t2.setAttribute("class", "sz");
-      t2.textContent = size(k.size);
-      g.append(t, t2);
-    }
-    if (act) {
-      g.setAttribute("tabindex", "0");
-      g.setAttribute("role", "button");
-      g.setAttribute("aria-label", `${k.name}, ${size(k.size)}`);
-      g.addEventListener("click", act);
-      g.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); act(); } });
-    }
-    svg.append(g);
-  });
+  svg.setAttribute("viewBox", "0 0 160 24");
+  svg.setAttribute("class", "spark");
+  svg.setAttribute("aria-hidden", "true");
+  const lo = Math.min(...points), hi = Math.max(...points), span = hi - lo || 1;
+  const line = document.createElementNS(SVGNS, "polyline");
+  line.setAttribute("points", points.map((v, i) => `${(points.length > 1 ? (i / (points.length - 1)) * 160 : 80).toFixed(1)},${(22 - ((v - lo) / span) * 20).toFixed(1)}`).join(" "));
+  svg.append(line);
   return svg;
+};
+const card = (label, value, ...more) => el("div", { className: "card" }, el("div", { className: "mut", textContent: label }), el("div", { className: "big" }, ...(Array.isArray(value) ? value : [value])), ...more);
+function growthCard(h) {
+  if (h.length < 2) return card("Growth, last 30 days", "collecting", el("div", { className: "mut", textContent: "A scan adds a point each interval." }));
+  const last = h[h.length - 1], from = h.find((p) => p.t >= last.t - 30 * 86400) || h[0];
+  const d = last.total - from.total, days = Math.max(1, Math.round((last.t - from.t) / 86400));
+  return card(days >= 30 ? "Growth, last 30 days" : `Growth, last ${plural(days, "day")}`, `${d >= 0 ? "+" : "-"}${size(Math.abs(d))}`, sparkline(h.slice(-60).map((p) => p.total)));
 }
-function ageLegend(hasAges) {
-  const chip = (cls, text) => el("span", { className: "legend" }, el("i", { className: "sw " + cls }), text);
-  return el("p", { className: "mut legendrow" }, "Colour is when anything under the tile was last used: ",
-    ...(hasAges ? AGE_STEPS.map(([, text], i) => chip("a" + i, text)) : [chip("a-none", "unknown, needs UI_REGISTRY_STORAGE_MOUNT")]));
-}
-function mapSection(u) {
-  const root = el("div"), nowSecs = Date.now() / 1000;
-  const draw = () => {
-    const node = mapNode(u.tree);
-    const trail = [{ name: "All", path: [] }, ...usageView.path.map((name, i) => ({ name, path: usageView.path.slice(0, i + 1) }))];
-    const crumb = el("nav", { className: "crumbs", "aria-label": "Map level" }, ...trail.map((c, i) => (i === trail.length - 1 ? el("span", { textContent: c.name })
-      : el("button", { type: "button", className: "linkbtn", textContent: c.name, onclick: () => { usageView.path = c.path; draw(); } }))));
-    const kids = limitKids(node.kids, 500); // the table lists what the map folds into one tile
-    const rows = kids.map((k) => {
-      const act = tileAction(k, draw);
-      return el("tr", {}, el("td", {}, act ? el("button", { type: "button", className: "linkbtn", textContent: k.name, onclick: act }) : k.name), el("td", { textContent: size(k.size) }),
-        el("td", { className: "mut", textContent: node.size ? (100 * k.size / node.size).toFixed(1) + "%" : "" }), usedCell(k.used));
-    });
-    root.replaceChildren(crumb, treemapSvg(node, nowSecs, draw), ageLegend(!!u.mount),
-      el("table", { className: "usagetable" }, el("thead", {}, el("tr", {}, ...["Name", "Unique size", "Share", "Last used"].map((h) => el("th", { textContent: h })))), el("tbody", {}, ...rows)));
+const reposOf = (top) => (top?.kids || []).flatMap((ns) => ns.kids.filter((k) => k.repo));
+const repoHash = (repo) => `#/repo/${repo}?tab=storage`;
+
+// The map: one column per namespace, a block per repository, area is unique bytes, colour is the oldest last-used tag under it.
+function diskMap(u, nowSecs) {
+  const cols = u.tree.kids.filter((k) => "ns" in k && k.size > 0);
+  const col = (ns) => {
+    const isShared = (k) => !k.repo && k.name.startsWith("shared by");
+    const sharedKids = ns.kids.filter((k) => isShared(k) && k.size > 0), repos = limitKids(ns.kids.filter((k) => !isShared(k)), 30);
+    const c = el("div", { className: "dcol" }, el("div", { className: "dhead", title: `${ns.name} ${size(ns.size)}`, textContent: `${ns.name} ${size(ns.size)}` }),
+      ...sharedKids.map((k) => el("div", { className: "dshared", title: `${k.name}: ${size(k.size)}. Counted here, not in a repository.`, textContent: `${size(k.size)} shared` })));
+    for (const r of repos) {
+      const tags = r.tags ? `, ${plural(r.tags, "tag")}` : "";
+      const old = r.oldest ? `oldest ${ageWord() === "pulled" ? "pull" : "push"} ${ageDays(r.oldest)} d` : "age unknown";
+      const b = r.repo ? el("a", { className: `dblk ${ageClass(r.oldest, nowSecs)}`, href: repoHash(r.repo), title: `${r.name}: ${size(r.size)} only this repository holds, ${size(r.held)} in all` }) : el("div", { className: `dblk ${ageClass(r.oldest, nowSecs)}` });
+      b.style.flex = `${r.size} 1 0`;
+      b.append(el("span", { className: "dname", textContent: r.name }), el("span", { className: "dsub", textContent: `${size(r.size)}${tags}` }), el("span", { className: "dsub", textContent: old }));
+      c.append(b);
+    }
+    c.style.flex = `${ns.size} 1 0`;
+    return c;
   };
-  draw();
-  return [el("h3", { textContent: "Usage map" }),
-    el("p", { className: "mut", textContent: "Space by namespace, repository and tag. A layer that several tags use counts once, at the level that holds all of them, in a tile named shared. Tags on one digest are one tile. Click a tile to open it." }), root];
+  return el("div", { className: "dmap" }, ...cols.map(col));
 }
 
-const CHART = { w: 960, h: 280, l: 74, r: 14, t: 12, b: 30 };
-function niceMax(v) { // a round upper bound for the y axis
-  const p = 10 ** Math.floor(Math.log10(Math.max(v, 1))), f = v / p;
-  return p * (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10);
-}
-function chartSeries(history) { // the total, the on-disk total when recorded, and the five largest repositories in the newest point
-  const last = history[history.length - 1];
-  const top = Object.entries(last.repos || {}).sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).slice(0, 5).map(([name]) => name);
-  return [{ name: "Total, unique blobs", cls: "s-total", pick: (p) => p.total },
-    ...(history.some((p) => p.disk != null) ? [{ name: "On disk", cls: "s-disk", pick: (p) => p.disk }] : []),
-    ...top.map((name, i) => ({ name, cls: "s-c" + i, pick: (p) => (p.repos || {})[name] ?? null }))];
-}
-function usageChart(history) {
-  const { w, h, l, r, t, b } = CHART, series = chartSeries(history);
-  const t0 = history[0].t, t1 = history[history.length - 1].t;
-  const max = niceMax(Math.max(...series.flatMap((s) => history.map((p) => s.pick(p) ?? 0))));
-  const X = (time) => l + (t1 === t0 ? (w - l - r) / 2 : ((time - t0) / (t1 - t0)) * (w - l - r));
-  const Y = (v) => t + (1 - v / max) * (h - t - b);
-  const svg = document.createElementNS(SVGNS, "svg");
-  svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
-  svg.setAttribute("class", "chart");
-  svg.setAttribute("role", "img");
-  svg.setAttribute("aria-label", `Space used over time, ${history.length} points`);
-  const add = (tag, attrs, text) => {
-    const n = document.createElementNS(SVGNS, tag);
-    for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
-    if (text !== undefined) n.textContent = text;
-    svg.append(n);
+// The table: folder, repository, tag, each level sorted by the chosen column. One row is a digest, named by its tags.
+const STORAGE_COLS = [
+  { key: "name", label: "Name", val: (n) => n.name, cmp: (a, b) => collator.compare(a, b) },
+  { key: "size", label: "Unique size", tip: "Bytes only this node holds. A layer several tags use counts once, at the lowest level that holds all of them.", val: (n) => n.size, cmp: numCmp },
+  { key: "shared", label: "Shared size", tip: "Bytes this node uses that something outside it uses too.", val: (n) => Math.max(0, n.held - n.size), cmp: numCmp },
+  { key: "tags", label: "Tags", val: (n) => n.tags, cmp: numCmp },
+  { key: "oldest", label: "Oldest used", tip: "The tag under this node that was used longest ago. Sorts oldest first.", val: (n) => n.oldest?.[0] ?? null, cmp: numCmp },
+  { key: "newest", label: "Newest used", val: (n) => n.newest?.[0] ?? null, cmp: numCmp },
+];
+const storageUI = { view: "map", open: new Set(), sort: { key: "size", dir: -1 } };
+function storageTable(u, redraw) {
+  const col = STORAGE_COLS.find((c) => c.key === storageUI.sort.key), dir = storageUI.sort.dir;
+  const order = (kids) => sortItems(kids, col, dir, (a, b) => collator.compare(a.name, b.name));
+  const rows = [];
+  const walk = (n, depth, key) => {
+    const kids = n.kids.length ? order(n.kids) : [], open = storageUI.open.has(key);
+    const isTag = !!n.tag, isRepo = !!n.repo && !isTag;
+    const toggle = kids.length ? el("button", { type: "button", className: "linkbtn chevbtn", "data-fk": "c:" + key, "aria-expanded": String(open), "aria-label": `${open ? "Collapse" : "Expand"} ${n.name}`,
+      onclick: () => { if (open) storageUI.open.delete(key); else storageUI.open.add(key); redraw(); } }, icon("chev", open ? "open" : "")) : el("span", { className: "chevgap" });
+    const name = isRepo ? el("a", { href: repoHash(n.repo), textContent: n.name }) : isTag ? el("a", { href: `#/repo/${n.repo}:${n.tag}`, textContent: n.name }) : el("span", { textContent: n.name });
+    const actions = [];
+    if (isRepo) actions.push(el("a", { href: repoHash(n.repo), textContent: "Select tags" }));
+    if (isTag && canWrite()) actions.push(el("button", { type: "button", className: "danger", textContent: "Delete", onclick: () => void deleteManifest(n.repo, n.tag, n.digest, async () => { storageUI.gone.add(`${n.repo}@${n.digest}`); banner("Deleted. Sizes update at the next usage scan."); redraw(); }) }));
+    const indent = el("span", { className: "indent" }, toggle);
+    indent.style.paddingLeft = depth * 18 + "px";
+    if (!(isTag && storageUI.gone.has(`${n.repo}@${n.digest}`))) rows.push(el("tr", { className: "depth" + depth },
+      el("td", { className: "nm" }, indent, name),
+      el("td", { textContent: size(n.size) }), el("td", { className: "mut", textContent: size(Math.max(0, n.held - n.size)) }), el("td", { className: "mut", textContent: n.tags || "" }),
+      usedCell(n.oldest), usedCell(n.newest), el("td", { className: "nw" }, ...actions)));
+    if (open) for (const k of kids) if (k.size > 0 || k.tags) walk(k, depth + 1, key + "/" + (k.digest || k.name));
   };
-  for (const f of [0, 0.5, 1]) {
-    add("line", { x1: l, x2: w - r, y1: Y(max * f), y2: Y(max * f), class: "grid" });
-    add("text", { x: l - 8, y: Y(max * f) + 4, class: "axis", "text-anchor": "end" }, size(max * f));
-  }
-  const day = (s) => new Date(s * 1000).toLocaleDateString();
-  add("text", { x: l, y: h - 8, class: "axis" }, day(t0));
-  add("text", { x: w - r, y: h - 8, class: "axis", "text-anchor": "end" }, day(t1));
-  for (const s of series) {
-    const pts = history.filter((p) => s.pick(p) != null);
-    if (pts.length > 1) add("polyline", { points: pts.map((p) => `${X(p.t).toFixed(1)},${Y(s.pick(p)).toFixed(1)}`).join(" "), class: "line " + s.cls });
-    else if (pts.length) add("circle", { cx: X(pts[0].t), cy: Y(s.pick(pts[0])), r: 3.5, class: "dot " + s.cls });
-  }
-  return [svg, el("p", { className: "mut legendrow" }, ...series.map((s) => el("span", { className: "legend" }, el("i", { className: "sw " + s.cls }), s.name)))];
+  for (const k of order(u.tree.kids)) if (k.size > 0 || k.tags) walk(k, 0, k.name);
+  const head = STORAGE_COLS.map((c) => {
+    const on = storageUI.sort.key === c.key;
+    return el("th", { "aria-sort": on ? (dir < 0 ? "descending" : "ascending") : "none" }, el("button", { type: "button", className: "thbtn", title: c.tip || "", "data-fk": "s:" + c.key,
+      onclick: () => { storageUI.sort = on ? { key: c.key, dir: -dir } : { key: c.key, dir: c.key === "name" || c.key === "oldest" ? 1 : -1 }; redraw(); } }, c.key === "oldest" ? ageHead() === "Last pulled" ? c.label : "Oldest push" : c.label, on ? icon("arrow", dir < 0 ? "desc" : "") : null));
+  });
+  return el("table", { className: "storagetable" }, el("thead", {}, el("tr", {}, ...head, el("th", {}))), el("tbody", {}, ...rows));
 }
-function chartSection(u) {
-  const h = u.history;
-  const head = el("h3", { textContent: "Usage over time" });
-  if (!h.length) return [head, el("p", { className: "mut", textContent: "No scan has finished yet. The first one runs after the first full walk of the registry." })];
-  const hint = h.length < 2 ? "One point so far. A scan adds a point every " + Math.round(u.interval / 60) + " minutes; the line fills in from here." :
-    `${h.length} points, hourly for a week and daily after that, kept for 90 days. The repositories are the five largest now; a layer that two repositories share counts in each.`;
-  return [head, el("p", { className: "mut", textContent: hint }), ...usageChart(h)];
-}
-async function usagePane(seq) {
-  const u = await api("/api/usage");
+storageUI.gone = new Set();
+
+async function storagePane(seq) {
+  const u = await loadStorage(true);
   if (seq !== paneSeq) return;
-  const lines = [];
-  if (u.updated) {
-    lines.push(`${size(u.total)} held by ${plural(u.tags, "tag")} in ${u.blobs} unique blobs.`);
-    lines.push(u.disk != null ? `${size(u.disk)} on disk in ${u.files} blobs.` + (u.disk > u.total ? " The difference is blobs no tag uses, which garbage collection frees." : "")
-      : "Sizes come from the manifests. Mount the registry storage read-only and set UI_REGISTRY_STORAGE_MOUNT to also see the on-disk total and when data was last used.");
-    lines.push(`Scanned ${ago(u.updated)}, every ${Math.round(u.interval / 60)} minutes.`);
-  } else lines.push("The first scan runs once the first full walk of the registry has finished.");
-  showMain(el("h2", {}, el("span", { className: "ico" }, icon("chart")), "Storage usage"), el("p", { className: "mut", textContent: lines.join(" ") }),
-    ...chartSection(u), ...(u.tree && u.tree.kids.length ? mapSection(u) : []));
+  const nowSecs = Date.now() / 1000;
+  if (!u || !u.updated) {
+    showMain(el("nav", { className: "crumbs" }, el("a", { href: "#/", textContent: (cfg.registry || "Registry").replace(/^https?:\/\//, "") }), el("span", { textContent: "Storage" })), el("h2", { textContent: "Storage" }),
+      el("p", { className: "mut", textContent: "The first scan runs once the first full walk of the registry has finished." }));
+    return;
+  }
+  const repos = reposOf(u.tree), biggest = [...repos].sort((a, b) => b.size - a.size)[0];
+  const sharedAll = u.tree.kids.find((k) => !("ns" in k));
+  const stale = u.stale;
+  const cards = el("div", { className: "cards" },
+    card("Largest repository", biggest ? [el("a", { href: repoHash(biggest.repo), textContent: biggest.repo }), `, ${size(biggest.size)}`] : "none"),
+    card(`Not ${ageWord()} in 180 days`, stale ? el("span", { className: stale.tags ? "warnfg" : "", textContent: `${size(stale.frees)}, ${plural(stale.tags, "tag")}` }) : "needs the storage mount",
+      stale ? el("div", { className: "mut", textContent: "What garbage collection frees if all of them go." }) : null),
+    card("Untagged layers (GC frees now)", u.unreferenced != null ? size(u.unreferenced) : "needs the storage mount", u.unreferenced != null ? null : el("div", { className: "mut", textContent: "Set UI_REGISTRY_STORAGE_MOUNT." })),
+    growthCard(u.history));
+  const redraw = () => keepFocus(holder, () => void body());
+  const holder = el("div");
+  const legend = el("span", { className: "legendrow" }, `${ageHead()}:`, ...(u.mount ? AGE_STEPS.map(([, text], i) => el("span", { className: "legend" }, el("i", { className: "sw a" + i }), text)) : [el("span", { className: "legend" }, el("i", { className: "sw a-none" }), "unknown, needs the storage mount")]));
+  const toggleBtn = (view, text) => el("button", { type: "button", className: "segbtn", "aria-pressed": String(storageUI.view === view), textContent: text, onclick: () => { storageUI.view = view; void paint(); } });
+  const bar = el("div", { className: "bar storagebar" });
+  const body = () => {
+    holder.replaceChildren(storageUI.view === "map" ? diskMap(u, nowSecs) : storageTable(u, redraw));
+    return Promise.resolve();
+  };
+  const foot = el("p", { className: "mut" });
+  const paint = () => {
+    foot.replaceChildren(storageUI.view === "map" ? "Click a block to open its repository and pick tags to delete. Area is unique bytes. A layer shared by two repositories counts in the namespace above them, in the strip under its name."
+      : "Click a header to sort each level. Shared size is what a node uses that something outside it uses too.", sharedAll ? ` ${size(sharedAll.size)} is shared by several namespaces.` : "");
+    bar.replaceChildren(el("div", { role: "group", "aria-label": "View", className: "seg2" }, toggleBtn("map", "Map"), toggleBtn("table", "Table")), legend);
+    return body();
+  };
+  await paint();
+  const note = u.atime === false ? " No layer has an access time newer than its write time, so ages are push times: either access time is not recorded on this storage (noatime, or an NFS server that does not update it) or nothing has been pulled since it was pushed." : "";
+  showMain(el("nav", { className: "crumbs", "aria-label": "Path" }, el("a", { href: "#/", textContent: (cfg.registry || "Registry").replace(/^https?:\/\//, "") }), el("span", { textContent: "Storage" })),
+    el("div", { className: "storagehead" }, el("h2", { textContent: "Storage" }),
+      el("span", { className: "mut", textContent: `${size(u.total)} in ${plural(u.tags, "tag")} across ${plural(repos.length, "repository", "repositories")}. Sizes count each layer once. Scanned ${ago(u.updated)}.${note}` })),
+    cards, bar, holder, foot);
+}
+
+// The Storage tab of a repository: tags by last use with what deleting each frees, a selection, and the existing delete.
+async function loadDetail(n) {
+  try { n.detail = await api("/api/storage/repo?repo=" + encodeURIComponent(n.path)); } catch (e) { n.detail = null; n.detailErr = e.message; }
+}
+const repoTab = () => {
+  let h = location.hash;
+  try { h = decodeURIComponent(h); } catch (e) { /* the raw hash is tested */ }
+  return /\?tab=storage$/.test(h) && cfg.usage ? "storage" : "tags";
+};
+function repoTabs(n, tab) {
+  if (!cfg.usage) return [];
+  const t = (label, href, on) => el("a", { role: "tab", href, className: on ? "on" : "", "aria-selected": String(on), textContent: label });
+  return [el("div", { role: "tablist", className: "tabs" }, t("Tags", hashOf(n), tab === "tags"), t("Storage", repoHash(n.path), tab === "storage"))];
+}
+// The tags to delete to keep the `keep` newest images. The registry deletes by digest, so images are ranked and every tag of an old one is picked.
+function allButNewest(rows, keep) {
+  const newest = new Map();
+  for (const t of rows) newest.set(t.digest, Math.max(newest.get(t.digest) ?? 0, t.pushed ?? 0));
+  const kept = new Set([...newest].sort((a, b) => b[1] - a[1]).slice(0, keep).map(([d]) => d));
+  return new Set(rows.filter((t) => !kept.has(t.digest)).map((t) => t.tag));
+}
+// A redraw replaces the control that has focus, so focus the new control with the same data-fk.
+function keepFocus(box, fn) {
+  const key = document.activeElement?.dataset?.fk;
+  fn();
+  if (key) box.querySelector(`[data-fk="${CSS.escape(key)}"]`)?.focus();
+}
+const STALE_OPTIONS = [["180", "Not used in 180 days"], ["90", "Not used in 90 days"], ["30", "Not used in 30 days"], ["keep10", "All but the newest 10"], ["none", "None"]];
+function repoStorage(n) {
+  const d = n.detail, u = storage.data;
+  if (!d || !d.updated) return [el("p", { className: "mut", textContent: n.detailErr || "No scan has covered this repository yet. The first one runs after the first full walk of the registry." })];
+  const st = stateOf("rstor:" + n.path);
+  st.picked ??= new Set();
+  st.sort ??= { key: "used", dir: 1 };
+  const rows = d.tags.filter((t) => n.tagMap.has(t.tag));
+  const gone = d.tags.length - rows.length;
+  for (const k of st.picked) if (!n.tagMap.has(k)) st.picked.delete(k);
+  const node = reposOf(u?.tree).find((k) => k.repo === n.path);
+  const cut = (days) => Date.now() / 1000 - days * 86400;
+  const staleNames = (days) => new Set(rows.filter((t) => t.used && t.used[0] < cut(days)).map((t) => t.tag));
+  const staleFrees = freedBytes(d, staleNames(180));
+  const word = ageWord();
+  const src = u?.atime === true ? "last access (atime)" : u?.atime === false ? "push time (access time not recorded)" : "unknown, needs the storage mount";
+  const cards = el("div", { className: "cards" }, card("Repository size", `${size(node?.held ?? rows.reduce((a, t) => a + t.size, 0))}, ${plural(rows.length, "tag")}`),
+    card("Layers only this repo uses", size(node?.size ?? 0)),
+    card(`Not ${word} in 180 days`, el("span", { className: staleNames(180).size ? "warnfg" : "", textContent: `${plural(staleNames(180).size, "tag")}, frees ${size(staleFrees.bytes)}` })),
+    card("Age source", src));
+  const sum = rows.reduce((a, t) => a + t.frees, 0) || 1, top = Math.max(1, ...rows.map((t) => t.frees)) / sum;
+  const max = cfg.maxBatch || 100;
+  const choose = el("select", { "aria-label": "Quick select", onchange: () => {
+    const v = choose.value;
+    st.picked = v === "none" ? new Set() : v === "keep10" ? allButNewest(rows, 10) : staleNames(Number(v));
+    draw();
+  } }, el("option", { value: "", textContent: "Choose..." }), ...STALE_OPTIONS.map(([v, text]) => el("option", { value: v, textContent: v === "180" || v === "90" || v === "30" ? text.replace("used", word) : text })));
+  const cols = [
+    { key: "tag", label: "Tag", val: (t) => t.tag, cmp: tagCompare }, { key: "frees", label: "Frees", tip: "Bytes only this image holds, which garbage collection frees once it is deleted.", val: (t) => t.frees, cmp: numCmp },
+    { key: "size", label: "Size", val: (t) => t.size, cmp: numCmp }, { key: "share", label: "Share of repo", tip: "This tag's frees against the frees of every tag in the repository.", val: (t) => t.frees, cmp: numCmp },
+    { key: "used", label: ageHead(), tip: USED_TIP, val: (t) => t.used?.[0] ?? null, cmp: numCmp }, { key: "pushed", label: "Pushed", val: (t) => t.pushed ?? null, cmp: numCmp },
+  ];
+  const holder = el("div", { className: "tablebox" }), sel = el("div", { className: "selbar" });
+  const draw = () => keepFocus(holder, paintRows);
+  const paintRows = () => {
+    const col = cols.find((c) => c.key === st.sort.key);
+    const list = sortItems(rows, col, st.sort.dir, (a, b) => tagCompare(b.tag, a.tag));
+    const head = cols.map((c) => {
+      const on = st.sort.key === c.key;
+      return el("th", { "aria-sort": on ? (st.sort.dir < 0 ? "descending" : "ascending") : "none" }, el("button", { type: "button", className: "thbtn", title: c.tip || "", "data-fk": "s:" + c.key,
+        onclick: () => { st.sort = on ? { key: c.key, dir: -st.sort.dir } : { key: c.key, dir: c.key === "tag" || c.key === "used" ? 1 : -1 }; draw(); } }, c.label, on ? icon("arrow", st.sort.dir < 0 ? "desc" : "") : null));
+    });
+    const all = el("input", { type: "checkbox", "aria-label": "Select every tag", "data-fk": "all", checked: list.length > 0 && list.every((t) => st.picked.has(t.tag)),
+      onchange: () => { for (const t of list) if (all.checked) st.picked.add(t.tag); else st.picked.delete(t.tag); draw(); } });
+    const tr = (t) => {
+      const on = st.picked.has(t.tag);
+      const stale = on || (t.used && t.used[0] < cut(180));
+      const b = el("input", { type: "checkbox", checked: on, "aria-label": `Select ${t.tag}`, "data-fk": "t:" + t.tag, onchange: () => { if (b.checked) st.picked.add(t.tag); else st.picked.delete(t.tag); draw(); } });
+      const bar = el("span", { className: "sbar" }, el("span", { className: "sfill" + (stale ? " old" : "") }));
+      bar.firstChild.style.width = Math.round((100 * (t.frees / sum)) / top) + "%";
+      bar.title = `${((100 * t.frees) / sum).toFixed(1)}% of what this repository's tags free`;
+      return el("tr", { className: on ? "on" : "" }, el("td", {}, b), el("td", {}, el("a", { href: `#/repo/${n.path}:${t.tag}`, textContent: t.tag })),
+        el("td", { className: "num", textContent: t.shares ? `0 B, shares ${t.shares}` : size(t.frees) }), el("td", { className: "mut num", textContent: size(t.size) }), el("td", {}, bar),
+        usedCell(t.used), el("td", { className: "mut nw", title: t.pushed ? new Date(t.pushed * 1000).toLocaleString() : "", textContent: t.pushed ? ago(t.pushed) : "" }));
+    };
+    holder.replaceChildren(el("table", { className: "storagetable" }, el("thead", {}, el("tr", {}, el("th", { className: "pick" }, all), ...head)), el("tbody", {}, ...list.map(tr))));
+    const k = st.picked.size, f = freedBytes(d, st.picked);
+    sel.hidden = !k;
+    const go = el("button", { type: "button", className: "danger", textContent: cfg.binDays ? `Move ${plural(k, "tag")} to bin` : `Delete ${plural(k, "tag")}`, disabled: !canWrite() || k > max,
+      onclick: () => void deleteTags(n, rows.filter((t) => st.picked.has(t.tag)).map((t) => n.tagMap.get(t.tag))) });
+    sel.replaceChildren(el("span", { className: "selcount", textContent: `${plural(k, "tag")} selected` }),
+      el("span", { textContent: `Frees about ${size(f.bytes)} after garbage collection. Layers other tags still use are kept.` + (f.extra ? ` ${plural(f.extra, "more tag")} on the same digest go too.` : "") + (k > max ? ` At most ${max} at once.` : "") }),
+      el("span", { className: "grow" }), el("button", { type: "button", textContent: "Clear", onclick: () => { st.picked.clear(); choose.value = ""; draw(); } }), ...(canWrite() ? [go] : []));
+  };
+  paintRows();
+  return [cards, el("div", { className: "bar" }, el("label", { className: "mut" }, "Select ", choose), el("span", { className: "mut", textContent: `Sorted by ${st.sort.key === "used" ? `last ${word}, oldest first` : st.sort.key}.`
+    + (gone ? ` ${plural(gone, "tag")} deleted since the scan.` : "") + (u?.updated ? ` Scanned ${ago(u.updated)}.` : "") })), holder, sel];
 }
 
 // ---- Recycle bin: a delete keeps the manifest in the state file, so Restore can push it back ------------------------------------
@@ -1568,9 +1698,9 @@ async function binPane(seq) {
 function parseHash() {
   let h = "/";
   try { h = decodeURIComponent(location.hash.slice(1)) || prefs.selected; } catch (e) { /* malformed escape: show the registry */ }
-  const m = /^\/(?:repo|dir)\/([^:@]+)(?::([^@]+))?(?:@(.+))?$/.exec(h);
+  const m = /^\/(?:repo|dir)\/([^:@]+)(?::([^@]+))?(?:@(.+))?$/.exec(h.replace(/\?tab=storage$/, ""));
   if (h === "/recent") return { kind: "recent" };
-  if (h === "/usage") return { kind: "usage" };
+  if (h === "/storage" || h === "/usage") return { kind: "storage" };
   if (h === "/bin") return { kind: "bin" };
   if (h === "/pypi") return { kind: "proot" };
   const py = /^\/pypi\/([^@]+)(?:@(.+))?$/.exec(h);
@@ -1580,7 +1710,7 @@ function parseHash() {
 let navSeq = 0;
 async function resolve(r) {
   if (r.kind === "recent") return RECENT;
-  if (r.kind === "usage") return cfg.usage ? USAGE : tree.root;
+  if (r.kind === "storage") return cfg.usage ? STORAGE : tree.root;
   if (r.kind === "bin") return cfg.binDays ? BIN : tree.root;
   if (r.kind === "root") return tree.root;
   if (r.kind === "proot") return cfg.pypi ? tree.proot : null;
@@ -1702,6 +1832,8 @@ async function doSync() {
   if (!first && (grew || evs.length || gap)) void renderPane();
   setChecked(rc.checkedAgo);
   liveLabel();
+  void refreshDisk();
+  if (cfg.usage && Date.now() - storage.at > 300000) void loadStorage(true); // the sizes in the tree follow the scans
 }
 let stale = false;
 let syncTimer = 0;
@@ -2863,14 +2995,15 @@ setWidth(prefs.sidebar, false);
 for (const id of prefs.expanded) expanded.add(id);
 $("prefs").onclick = () => settings();
 $("help").onclick = () => helpPanel();
-$("usage").onclick = () => { location.hash = "#/usage"; };
+$("storage").onclick = () => { location.hash = "#/storage"; };
+$("disk").onclick = () => { location.hash = "#/storage"; };
 $("bin").onclick = () => { location.hash = "#/bin"; };
 tree.root = { kind: "root", id: "root", name: "Registry", parent: null, kids: new Map(), sortedKids: null };
 tree.byId.set("root", tree.root);
 tree.proot = { kind: "proot", id: "proot", name: "PyPI", parent: null, kids: [] };
 tree.byId.set("proot", tree.proot);
 tree.names = [];
-try { cfg = await api("/api/config"); $("reg").textContent = cfg.registry; $("ver").textContent = `v${cfg.version} · ${cfg.revision.slice(0, 7)}`; banner(notice()); $("usage").hidden = !cfg.usage; $("bin").hidden = !cfg.binDays; void binCount();
+try { cfg = await api("/api/config"); $("reg").textContent = cfg.registry; $("ver").textContent = `v${cfg.version} · ${cfg.revision.slice(0, 7)}`; banner(notice()); $("storage").hidden = !cfg.usage; $("bin").hidden = !cfg.binDays; void binCount(); void loadStorage(true);
   if (cfg.login) $("who").replaceChildren(...(cfg.user ? [cfg.user, " ", el("a", { href: cfg.logout, textContent: "Log out", className: "btn" })] : [el("a", { href: cfg.login, textContent: "Log in", className: "btn" })]));
 }  catch (e) { banner(e.message, true); }
 expanded.add("root");

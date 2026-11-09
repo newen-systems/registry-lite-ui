@@ -4,6 +4,19 @@ registry-lite-ui is a web UI for a plain `registry:2` that browses, copies, move
 
 `podman-compose up -d` with `compose.yml` (registry and UI), or `podman-compose -f compose.ui.yml up -d` with `REGISTRY_URL` set for a registry that already runs. `docker compose` works the same way. Pin `UI_IMAGE` to a version or a digest in your `.env`.
 
+## Changes in 0.3.0
+
+### New Features
+
+- Storage view (header, Storage, or the Storage row under Recent): a disk map of the registry by size, to see what to delete. A block per repository in a column per namespace, area is the bytes only that repository holds (a layer several repositories use counts once, at the lowest level that holds all of them), coloured by how long ago its oldest tag was last used. A Table toggle lists folder, repository and tag with unique size, shared size, tag count and oldest and newest last used, sortable at each level, with Delete on a tag and Select tags on a repository. Four cards show the largest repository, what has not been used in 180 days and what deleting it frees, layers no tag uses (garbage collection frees them now) and growth over 30 days ([#50](https://github.com/newen-systems/registry-lite-ui/pull/50))
+- Disk fill: a pill in the header and a percentage on the Storage row show how full the filesystem under `UI_REGISTRY_STORAGE_MOUNT` is, and the tree shows the size of each folder and repository with a thin bar coloured by age ([#50](https://github.com/newen-systems/registry-lite-ui/pull/50))
+- Storage tab beside Tags on every repository: tags sorted by last use with what deleting each frees, a quick select ("Not pulled in 180 days", "All but the newest 10"), and a selection bar that says how much garbage collection frees and hands the selection to Delete selected, which moves the tags to the Bin ([#50](https://github.com/newen-systems/registry-lite-ui/pull/50))
+- A tag's last-used age is the newest of the layers only that image holds, so a base layer another image pulls does not make it look used. When no layer has an access time newer than its write time (`noatime`, or an NFS server that does not update it) the age is labelled as a push time ([#50](https://github.com/newen-systems/registry-lite-ui/pull/50))
+
+### Chores
+
+- The Usage page and its chart are replaced by the Storage view, which keeps a small growth line. `#/usage` opens Storage ([#50](https://github.com/newen-systems/registry-lite-ui/pull/50))
+
 ## Changes in 0.2.31
 
 ### Bug Fixes

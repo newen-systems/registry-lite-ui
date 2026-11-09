@@ -1684,7 +1684,8 @@ class UsageMap(unittest.TestCase):
         ages = {D("own1"): (900, "atime"), D("own2"): (100, "mtime"), D("s"): (500, "mtime"), D("p"): (100, "mtime")}
         r = self.run_map(ages)
         self.assertEqual(r["ages"]["a/x"], {"1": [900, "atime"], "latest": [900, "atime"]})
-        self.assertEqual(r["ages"]["a/y"], {"1": [500, "mtime"]})  # its base layer was used more recently than its own
+        self.assertEqual(r["ages"]["a/y"], {"1": [100, "mtime"]})  # its own layer, not the base layer other images pull
+        self.assertEqual(r["ages"]["b"], {"1": [500, "mtime"]})  # no layer of its own with an age: all its layers
         self.assertEqual(r["tree"]["used"], [900, "atime"])
         self.assertEqual(self.run_map()["ages"], {})  # no storage, no ages
         self.assertIsNone(self.run_map()["tree"]["used"])
@@ -1712,6 +1713,93 @@ class UsageMap(unittest.TestCase):
         self.assertEqual(layers, {D("2"), D("3")})  # the config and the manifests are not layers
         self.assertEqual(U.blobs_of(read, D("c")), ({}, set()))  # unreadable counts as nothing
         self.assertEqual(U.blobs_of(lambda d: b"[1]", D("a")), ({}, set()))
+
+
+class StorageView(unittest.TestCase):
+    TAGS = UsageMap.TAGS
+    BLOBS = UsageMap.BLOBS
+    AGES = {D("own1"): (900, "atime"), D("own2"): (100, "mtime"), D("s"): (500, "mtime"), D("p"): (100, "mtime"), D("own3"): (300, "mtime")}
+
+    def test_nodes_count_tags_hold_shared_bytes_and_spread_the_ages(self):
+        r = U.analyse(self.TAGS, self.BLOBS, self.AGES)
+        top = r["tree"]
+        by = {k["name"]: k for k in top["kids"]}
+        self.assertEqual((top["tags"], by["a"]["tags"], by["(top level)"]["tags"]), (4, 3, 1))
+        self.assertEqual(by["a"]["held"] - by["a"]["size"], 50)  # s is in a and also elsewhere
+        repo_x = next(k for k in by["a"]["kids"] if k["name"] == "a/x")
+        self.assertEqual((repo_x["size"], repo_x["held"], repo_x["tags"]), (110, 180, 2))
+        self.assertEqual((by["a"]["oldest"], by["a"]["newest"]), ([100, "mtime"], [900, "atime"]))  # a/y is the stalest, a/x the newest
+        self.assertEqual(top["held"], top["size"])
+
+    def test_a_tag_that_holds_no_layer_of_its_own_is_still_listed(self):
+        blobs = {D("1"): blobs_(base=40, a=5), D("2"): blobs_(base=40)}
+        r = U.analyse({"r:1": D("1"), "r:2": D("2")}, blobs)
+        (ns,) = r["tree"]["kids"]
+        (repo,) = ns["kids"]
+        self.assertEqual(sorted((k["name"], k["size"], k["held"]) for k in repo["kids"] if k["tags"]), [("1", 5, 45), ("2", 0, 40)])
+
+    def test_garbage_collection_frees_blobs_whose_every_holder_is_selected(self):
+        r = U.analyse(self.TAGS, self.BLOBS, self.AGES)
+        leaf = ("a/x", D("1"))
+        everything = {k: self.BLOBS[k[1]] for k in r["leaves"]}
+        self.assertEqual(U.freed([leaf], r["holders"], r["sizes"], everything), 110)  # s and p are still used elsewhere
+        both = [leaf, ("a/y", D("2"))]
+        self.assertEqual(U.freed(both, r["holders"], r["sizes"], everything), 110 + 17 + 20)  # p goes when both of its holders do
+        self.assertEqual(U.freed(list(r["leaves"]), r["holders"], r["sizes"], everything), r["total"])
+
+    def test_stale_summary_counts_tags_and_what_goes_with_them(self):
+        r = U.analyse(self.TAGS, self.BLOBS, self.AGES)
+        by = {d: b for d, b in self.BLOBS.items()}
+        out = U.stale_summary(r, by, 200 + 180 * U.DAY, days=180)  # only a/y (last used at 100) is older than 180 days; p is still used by a/x
+        self.assertEqual(out, {"tags": 1, "frees": 17})
+        self.assertEqual(U.stale_summary(U.analyse(self.TAGS, self.BLOBS), by, 5), None)  # no ages
+
+    def test_repo_detail_gives_what_a_selection_frees_and_marks_tags_that_share_a_digest(self):
+        r = U.analyse(self.TAGS, self.BLOBS, self.AGES)
+        d = U.repo_detail(r, self.BLOBS, "a/x", {"1": 77})
+        rows = {t["tag"]: t for t in d["tags"]}
+        self.assertEqual((rows["1"]["frees"], rows["latest"]["frees"], rows["latest"]["shares"]), (110, 0, "1"))
+        self.assertEqual((rows["1"]["size"], rows["1"]["pushed"], rows["1"]["used"]), (180, 77, [900, "atime"]))
+        held = {tuple(b) for b in d["blobs"]}
+        self.assertIn((50, 3), held)  # s: three leaves use it
+        self.assertEqual(sum(b[0] for b in d["blobs"]), 180)
+        self.assertEqual(rows["latest"]["blobs"], [])
+        self.assertEqual(U.repo_detail(r, self.BLOBS, "nope"), {"blobs": [], "tags": []})
+
+    def test_the_other_node_adds_up_what_it_folds(self):
+        tags = {f"r:{i}": D(format(i, "x")) for i in range(1, 8)}
+        ages = {D(f"u{i}"): (i * 10, "mtime") for i in range(1, 8)}
+        r = U.analyse(tags, {D(format(i, "x")): {D(f"u{i}"): i} for i in range(1, 8)}, ages)
+        kids = r["tree"]["kids"][0]["kids"][0]["kids"]
+        cut = U.folded(kids, 3)
+        self.assertEqual((cut[-1]["size"], cut[-1]["tags"], cut[-1]["oldest"]), (1 + 2 + 3 + 4 + 5, 5, [10, "mtime"]))
+
+    def test_fs_usage_and_the_atime_flag(self):
+        fs = U.fs_usage(tempfile.gettempdir())
+        self.assertTrue(fs["total"] >= fs["used"] > 0)
+        self.assertIsNone(U.fs_usage("/no/such/dir"))
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root)
+        image = ('{"config":{"digest":"%s","size":3},"layers":[{"digest":"%s","size":40}]}' % (D("1"), D("2"))).encode()
+        digest = R.hashed(image, "sha256:")
+        for dg, body, when in ((digest, image, (1, 1)), (D("1"), b"abc", (1, 1)), (D("2"), b"x" * 40, (800, 100))):
+            path = U.blob_path(root, dg)
+            os.makedirs(os.path.dirname(path))
+            with open(path, "wb") as f:
+                f.write(body)
+            os.utime(path, when)
+        st = P.State(clock=Clock())
+        st.update({"a"}, {"a:1": digest})
+        st.mark_baselined()
+        self.assertTrue(U.Usage(object(), st, root, clock=Clock()).scan()["atime"])
+        os.utime(U.blob_path(root, D("2")), (100, 100))  # access time frozen at the push, as under noatime
+        out = U.Usage(object(), st, root, clock=Clock()).scan()
+        self.assertFalse(out["atime"])  # decided per scan
+        self.assertEqual(out["ages"]["a"]["1"], [100, "mtime"])
+
+
+def blobs_(**kw):
+    return {D(k): v for k, v in kw.items()}
 
 
 class UsageHistory(unittest.TestCase):
@@ -2165,3 +2253,16 @@ class SeedRecentLater(unittest.TestCase):
         p = P.Poller(reg, st)
         p.cycle()
         self.assertEqual((list(st.events), st.baselined, p.created), ([], True, {}))  # nothing remembered, so a tag on that digest is tried again
+
+
+class StorageNoFold(unittest.TestCase):
+    def test_every_repository_stays_listed_and_only_a_repositorys_tags_fold(self):
+        n = U.MAX_LEAVES + 5
+        tags = {f"ns/r{i}:t": D(format(i, "x")) for i in range(1, n)}
+        r = U.analyse(tags, {D(format(i, "x")): {D(f"b{i}"): i} for i in range(1, n)})
+        (ns,) = r["tree"]["kids"]
+        self.assertEqual(len(ns["kids"]), n - 1)  # no "other" node among the repositories
+        many = {f"r:{i}": D(format(i, "x")) for i in range(1, n)}
+        (repo,) = U.analyse(many, {D(format(i, "x")): {D(f"b{i}"): i} for i in range(1, n)})["tree"]["kids"][0]["kids"]
+        self.assertEqual(len(repo["kids"]), U.MAX_LEAVES)
+        self.assertTrue(repo["kids"][-1]["name"].startswith("other ("))
