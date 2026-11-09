@@ -216,7 +216,7 @@ def analyse(tags, blobs_by_digest, ages=None, kinds=None):
         if key not in shared:
             name = "Layers used by more than one tag" if one_repo else (
                 "Layers used by more than one top-level folder" if not path else f"Layers used by more than one item in {path}")
-            shared[key] = {"name": name, "kind": "shared", "path": path, "sharers": {}, **blank()}
+            shared[key] = {"name": name, "kind": "shared", "path": path, "one_repo": one_repo, "sharers": {}, **blank()}
             folder(path)["kids"].append(shared[key])
         return shared[key]
 
@@ -231,8 +231,9 @@ def analyse(tags, blobs_by_digest, ages=None, kinds=None):
         else:
             where = common_prefix(repos)
             target, chain = shared_leaf(where, len(repos) == 1), prefixes(where)
-            for name in {child_name(where, r) for r in repos}:
-                target["sharers"][name] = target["sharers"].get(name, 0) + size
+            if len(repos) > 1:  # the items of the folder that use it. For the tags of one repository there is no list to give.
+                for name in {child_name(where, r) for r in repos}:
+                    target["sharers"][name] = target["sharers"].get(name, 0) + size
         for p in chain:
             folders[p]["size"] += size
             folders[p]["used"] = newest(folders[p]["used"], age)
@@ -266,6 +267,10 @@ def analyse(tags, blobs_by_digest, ages=None, kinds=None):
             n["oldest"] = n["newest"] = list(n["used"])
         n["used"] = list(n["used"]) if n["used"] else None
     settle(top)
+    for n in folders.values():  # a path that is both a repository and a folder: its own figures leave out what is under it
+        if n["kind"] == "repo":
+            n["own_size"] = sum(k["size"] for k in n["kids"] if k["kind"] == "tag" or (k["kind"] == "shared" and k["one_repo"]))
+            n["own_held"] = per_repo.get(n["repo"], 0)
     for n in [*folders.values(), *shared.values()]:
         if "sharers" in n:
             n["sharers"] = sorted(n["sharers"].items(), key=lambda kv: (-kv[1], kv[0]))[:50]

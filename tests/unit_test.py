@@ -2344,3 +2344,17 @@ class UsageRescan(unittest.TestCase):
         self.assertFalse(due(100 + 30, 100, 3600, 6, 5))  # changed, but a scan ran less than a minute ago
         self.assertTrue(due(100 + 61, 100, 3600, 6, 5))  # a push or delete since the last scan: the sizes follow it
         self.assertTrue(due(100 + 3600, 100, 3600, 5, 5))  # the interval
+
+
+class UsageSubrepos(unittest.TestCase):
+    def test_a_repository_with_sub_repositories_has_figures_of_its_own(self):
+        r = U.analyse({"a:1": D("1"), "a/b:1": D("2"), "a/b:2": D("3")}, {D("1"): blobs_(s=4, x=1), D("2"): blobs_(s=4, y=10), D("3"): blobs_(z=7)})
+        a = node_at(r["tree"], "a")
+        self.assertEqual((a["size"], a["own_size"], a["own_held"]), (4 + 1 + 10 + 7, 1, 5))  # the folder sums what is under it, the repository only its own tag (s is shared with a/b)
+        self.assertEqual(node_at(r["tree"], "a/b")["own_size"], 10 + 7)
+
+    def test_layers_shared_by_the_tags_of_one_repository_list_no_sharers(self):
+        r = U.analyse({"r:1": D("1"), "r:2": D("2")}, {D("1"): blobs_(s=5), D("2"): blobs_(s=5)})
+        (strip,) = sub(node_at(r["tree"], "r"), "shared")
+        self.assertEqual(strip["sharers"], [])
+        self.assertTrue(strip["one_repo"])

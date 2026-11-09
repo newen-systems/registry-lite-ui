@@ -1475,10 +1475,11 @@ function nodeAt(top, path) {
 function groupSmall(kids, total, min) {
   const live = kids.filter((k) => k.size > 0).sort((a, b) => b.size - a.size);
   const small = live.filter((k) => k.size < total * min);
-  if (small.length < 2) return live;
+  if (small.length < 2 || small.length === live.length) return live; // nothing to group, or everything is small and a single block would hide it all
   const rest = live.filter((k) => !small.includes(k));
   const olds = small.map((k) => k.oldest).filter(Boolean).sort((a, b) => a[0] - b[0]);
-  return [...rest, { name: `${small.length} smaller items`, kind: "other", size: small.reduce((a, k) => a + k.size, 0), held: 0, tags: small.reduce((a, k) => a + (k.tags || 0), 0), oldest: olds[0] || null, newest: null, kids: [], names: small.map((k) => k.name) }];
+  return [...rest, { name: `${small.length} smaller items`, kind: "other", size: small.reduce((a, k) => a + k.size, 0), held: 0, tags: small.reduce((a, k) => a + (k.tags || 0), 0), oldest: olds[0] || null, newest: null, kids: [], names: small.map((k) => k.name) }]
+    .sort((a, b) => b.size - a.size);
 }
 // The shared crumb: the registry, then one link per path segment, the last one plain. items: [{text, href}]
 function crumbNav(root, items) {
@@ -1499,18 +1500,18 @@ const storagePath = () => { // the folder the map shows, from #/storage/<path>
 };
 const MAP_W = 1000, MAP_H = 480, MIN_BLOCK = 0.02;
 const typeWord = (t) => (t === "helm" ? "chart" : t === "artifact" ? "artifact" : "");
-function diskMap(u, node, nowSecs, onShared) {
+function diskMap(u, node, nowSecs, onShared, onOther) {
   const kids = groupSmall(node.kids, node.size, MIN_BLOCK), boxes = squarify(kids.map((k) => k.size), MAP_W, MAP_H);
   const box = el("div", { className: "dmap" });
   kids.forEach((k, i) => {
     const b = boxes[i], big = (b.w / MAP_W) * (b.h / MAP_H);
-    const drill = (k.kind === "folder" || k.kind === "repo") && k.kids.some((x) => x.size > 0 && (x.kind === "folder" || x.kind === "repo"));
+    const drill = (k.kind === "folder" || k.kind === "repo") && k.kids.some((x) => x.kind === "folder" || x.kind === "repo");
     const href = k.kind === "tag" ? `#/repo/${k.repo}:${k.tag}` : drill ? `#/storage/${k.path}` : k.kind === "repo" ? repoHash(k.repo) : k.kind === "folder" ? `#/storage/${k.path}` : null;
-    const tile = href ? el("a", { href }) : k.kind === "shared" ? el("button", { type: "button", onclick: () => onShared(k) }) : el("div");
+    const tile = href ? el("a", { href }) : k.kind === "shared" ? el("button", { type: "button", onclick: () => onShared(k) }) : k.kind === "other" ? el("button", { type: "button", onclick: onOther }) : el("div");
     tile.className = `dblk ${ageClass(k.oldest, nowSecs)}${k.kind === "shared" ? " shared" : ""}`;
     Object.assign(tile.style, { left: (100 * b.x) / MAP_W + "%", top: (100 * b.y) / MAP_H + "%", width: (100 * b.w) / MAP_W + "%", height: (100 * b.h) / MAP_H + "%" });
     const old = k.oldest ? `oldest ${ageWord() === "pulled" ? "pull" : "push"} ${ageDays(k.oldest)} d` : "age unknown";
-    tile.title = `${k.name}: ${size(k.size)} only ${k.kind === "other" ? "these hold" : "this holds"}${k.held > k.size ? `, ${size(k.held)} in all` : ""}${k.names ? `. ${k.names.slice(0, 12).join(", ")}${k.names.length > 12 ? " and more" : ""}` : ""}`;
+    tile.title = `${k.kind === "other" ? "Click to list them in the table. " : ""}${k.name}: ${size(k.size)} only ${k.kind === "other" ? "these hold" : "this holds"}${k.held > k.size ? `, ${size(k.held)} in all` : ""}${k.names ? `. ${k.names.slice(0, 12).join(", ")}${k.names.length > 12 ? " and more" : ""}` : ""}`;
     if (b.w < 80 || b.h < 22) { tile.setAttribute("aria-label", `${k.name}, ${size(k.size)}`); return box.append(tile); } // too small for a readable label: the tooltip and the screen reader name it
     tile.append(el("span", { className: "dname", textContent: k.name }));
     if (b.w < 120 && big > 0.004) tile.append(el("span", { className: "dsub", textContent: size(k.size) }));
@@ -1532,7 +1533,7 @@ const STORAGE_COLS = [
 ];
 const storageUI = { view: "map", open: new Set(), sort: { key: "size", dir: -1 }, sharedKey: null, gone: new Set() };
 // The rows below a shared item: the folders or repositories that use those layers, with the bytes each uses.
-const sharerRows = (n) => (n.sharers || []).map(([name, bytes]) => ({ name, kind: "sharer", size: bytes, held: bytes, tags: 0, oldest: null, newest: null, kids: [], path: n.path ? `${n.path}/${name}` : name }));
+const sharerRows = (n) => (n.sharers || []).map(([name, bytes]) => ({ name, kind: "sharer", size: bytes, held: bytes, tags: 0, oldest: null, newest: null, kids: [], path: name === "(this repository)" ? "" : n.path ? `${n.path}/${name}` : name }));
 const rowIcon = (n) => (n.kind === "folder" ? icon("folder") : n.kind === "repo" || n.kind === "tag" ? kindIcon(n.type || "image") : n.kind === "shared" ? icon("box") : null);
 function storageTable(u, top, redraw) {
   const col = STORAGE_COLS.find((c) => c.key === storageUI.sort.key), dir = storageUI.sort.dir;
@@ -1543,7 +1544,7 @@ function storageTable(u, top, redraw) {
     const kids = order(kidsOf(n)), open = storageUI.open.has(key);
     const toggle = kids.length ? el("button", { type: "button", className: "linkbtn chevbtn", "data-fk": "c:" + key, "aria-expanded": String(open), "aria-label": `${open ? "Collapse" : "Expand"} ${n.name}`,
       onclick: () => { if (open) storageUI.open.delete(key); else storageUI.open.add(key); redraw(); } }, icon("chev", open ? "open" : "")) : el("span", { className: "chevgap" });
-    const href = n.kind === "tag" ? `#/repo/${n.repo}:${n.tag}` : n.kind === "repo" ? repoHash(n.repo) : n.kind === "sharer" ? `#/storage/${n.path}` : null;
+    const href = n.kind === "tag" ? `#/repo/${n.repo}:${n.tag}` : n.kind === "repo" ? repoHash(n.repo) : n.kind === "sharer" && n.path ? `#/storage/${n.path}` : null;
     const name = href ? el("a", { href, textContent: n.name }) : el("span", { textContent: n.name });
     const actions = [];
     if (n.kind === "repo") actions.push(el("a", { href: repoHash(n.repo), textContent: "Select tags" }));
@@ -1576,10 +1577,10 @@ async function storagePane(seq) {
     return;
   }
   const node = nodeAt(u.tree, path) || u.tree, shownPath = node === u.tree ? "" : path;
-  const repos = reposOf(u.tree), biggest = [...repos].sort((a, b) => b.size - a.size)[0];
+  const repos = reposOf(u.tree), own = (r) => r.own_size ?? r.size, biggest = [...repos].sort((a, b) => own(b) - own(a))[0];
   const stale = u.stale;
   const cards = el("div", { className: "cards" },
-    card("Largest repository", biggest ? [el("a", { href: repoHash(biggest.repo), textContent: biggest.repo }), `, ${size(biggest.size)}`] : "none"),
+    card("Largest repository", biggest ? [el("a", { href: repoHash(biggest.repo), textContent: biggest.repo }), `, ${size(own(biggest))}`] : "none"),
     card(`Not ${ageWord()} in 180 days`, stale ? el("span", { className: stale.tags ? "warnfg" : "", textContent: `${size(stale.frees)}, ${plural(stale.tags, "tag")}` }) : "needs the storage mount",
       stale ? el("div", { className: "mut", textContent: "What garbage collection frees if all of them go." }) : null),
     card("Untagged layers (GC frees now)", u.unreferenced != null ? size(u.unreferenced) : "needs the storage mount", u.unreferenced != null ? null : el("div", { className: "mut", textContent: "Set UI_REGISTRY_STORAGE_MOUNT." })),
@@ -1591,10 +1592,10 @@ async function storagePane(seq) {
   const bar = el("div", { className: "bar" });
   const showShared = (k) => { // which folders use the layers a shared block stands for
     sharedBox.replaceChildren(el("h3", { textContent: k.name }), el("p", { className: "mut", textContent: `${size(k.size)} held once and used by more than one item${k.path ? ` in ${k.path}` : ""}. Bytes each of them uses:` }),
-      el("table", { className: "sortable" }, el("tbody", {}, ...sharerRows(k).map((r) => el("tr", {}, el("td", {}, el("a", { href: `#/storage/${r.path}`, textContent: r.name })), el("td", { textContent: size(r.size) }))))));
+      el("table", { className: "sortable" }, el("tbody", {}, ...sharerRows(k).map((r) => el("tr", {}, el("td", {}, r.path ? el("a", { href: `#/storage/${r.path}`, textContent: r.name }) : r.name), el("td", { textContent: size(r.size) }))))));
   };
   const body = () => {
-    holder.replaceChildren(storageUI.view === "map" ? diskMap(u, node, nowSecs, showShared) : storageTable(u, node, redraw));
+    holder.replaceChildren(storageUI.view === "map" ? diskMap(u, node, nowSecs, showShared, () => { storageUI.view = "table"; void paint(); }) : storageTable(u, node, redraw));
     return Promise.resolve();
   };
   const foot = el("p", { className: "mut" });
@@ -1609,7 +1610,9 @@ async function storagePane(seq) {
   const note = u.atime === false ? " No layer has an access time newer than its write time, so ages are push times: either access time is not recorded on this storage (noatime, or an NFS server that does not update it) or nothing has been pulled since it was pushed." : "";
   const unread = u.unread?.count ? [el("p", { className: "hint", textContent: `${plural(u.unread.count, "tag")} could not be read and ${u.unread.count === 1 ? "is" : "are"} not counted (${u.unread.first.join(", ")}${u.unread.count > 5 ? ", ..." : ""}). The registry did not return their manifests.` })] : [];
   const pypi = cfg.pypi && !cfg.pypi.locked ? [el("p", { className: "mut", textContent: "Python packages are stored in GitLab, not on this registry's disk, so they are not counted here." })] : [];
-  const here = shownPath ? [el("p", { className: "mut" }, `${size(node.size)} in ${plural(node.tags, "tag")} under ${shownPath}. `, ...(node.kind === "repo" ? [el("a", { href: repoHash(node.repo), textContent: "Open the repository" })] : []))] : [];
+  const hollow = node.kids.filter((k) => k.size === 0 && k.tags > 0).length;
+  const here = [...(hollow && storageUI.view === "map" ? [el("p", { className: "mut", textContent: `${plural(hollow, "item")} here hold no bytes of their own (every layer is shared), so the map has no block for ${hollow === 1 ? "it" : "them"}. The table lists ${hollow === 1 ? "it" : "them"}.` })] : []),
+    ...(shownPath ? [el("p", { className: "mut" }, `${size(node.size)} in ${plural(node.tags, "tag")} under ${shownPath}. `, ...(node.kind === "repo" ? [el("a", { href: repoHash(node.repo), textContent: "Open the repository" })] : []))] : [])];
   showMain(crumbNav(regLabel(), [{ text: "Storage", href: "#/storage" }, ...pathCrumbs(shownPath, "#/storage")]),
     el("div", { className: "storagehead" }, el("h2", { textContent: "Storage" }),
       el("span", { className: "mut", textContent: `${size(u.total)} in ${plural(u.tags, "tag")} across ${plural(repos.length, "repository", "repositories")}. Sizes count each layer once. Scanned ${ago(u.updated)}.${note}` })),
@@ -1667,8 +1670,8 @@ function repoStorage(n) {
   const staleFrees = freedBytes(d, staleNames(180));
   const word = ageWord();
   const src = u?.atime === true ? "last access (atime)" : u?.atime === false ? "push time (access time not recorded)" : "unknown, needs the storage mount";
-  const cards = el("div", { className: "cards" }, card("Repository size, shared layers included", `${size(node?.held ?? rows.reduce((a, t) => a + t.size, 0))}, ${plural(rows.length, "tag")}`),
-    card("Unique size, layers only this repo uses (the tree)", size(node?.size ?? 0)),
+  const cards = el("div", { className: "cards" }, card("Repository size, shared layers included", `${size(node?.own_held ?? node?.held ?? rows.reduce((a, t) => a + t.size, 0))}, ${plural(rows.length, "tag")}`),
+    card("Unique size, layers only this repo uses (the tree)", size(node?.own_size ?? node?.size ?? 0)),
     card(`Not ${word} in 180 days`, el("span", { className: staleNames(180).size ? "warnfg" : "", textContent: `${plural(staleNames(180).size, "tag")}, frees ${size(staleFrees.bytes)}` })),
     card("Age source", src));
   const sum = rows.reduce((a, t) => a + t.frees, 0) || 1, top = Math.max(1, ...rows.map((t) => t.frees)) / sum;

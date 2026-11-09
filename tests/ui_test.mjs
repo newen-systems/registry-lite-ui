@@ -126,3 +126,12 @@ test("quick select: the placeholder changes nothing and a day count picks only w
   assert.deepEqual([...quickSelect("180", rows.map((r) => ({ ...r, used: [now, "atime"] })), now)], []); // everything used today: nothing is stale
   assert.deepEqual([...quickSelect("none", rows, now)], []);
 });
+
+test("grouping never hides a whole folder and keeps the blocks largest first", () => {
+  const groupSmall = load("groupSmall");
+  const k = (name, size) => ({ name, size, tags: 1, oldest: null, kids: [] });
+  const sixty = Array.from({ length: 60 }, (_, i) => k("r" + i, 16)); // each 1.6% of 1000: all small
+  assert.equal(groupSmall(sixty, 1000, 0.02).length, 60); // nothing to group them under, so they all stay
+  const out = groupSmall([k("a", 100), ...Array.from({ length: 40 }, (_, i) => k("s" + i, 15)), k("b", 120)], 1000, 0.02);
+  assert.deepEqual(out.map((x) => x.name), ["40 smaller items", "b", "a"]); // the group is 600: it sorts first
+});
