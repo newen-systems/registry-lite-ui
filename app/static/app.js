@@ -1484,20 +1484,20 @@ function groupSmall(kids, total, min, weight = (k) => k.size) {
     .sort((a, b) => weight(b) - weight(a));
 }
 // The shared crumb: the registry, then one link per path segment, the last one plain. items: [{text, href}]
-function crumbNav(root, items) {
-  const nav = el("nav", { className: "crumbs", "aria-label": "Path" }, el("a", { href: "#/", textContent: root }),
+function crumbNav(root, items, rootHref = "#/") {
+  const nav = el("nav", { className: "crumbs", "aria-label": "Path" }, el("a", { href: rootHref, textContent: root }),
     ...items.map((x, i) => (i === items.length - 1 ? el("span", { className: x.cls || "", textContent: x.text }) : el("a", { href: x.href, className: x.cls || "", textContent: x.text }))));
   if (!items.length) return nav; // the registry itself has nowhere to go up to
-  return el("div", { className: "crumbrow" }, el("button", { type: "button", className: "up", title: "Up one level", onclick: () => goUp(items, location) }, icon("left"), "Up"), nav);
+  return el("div", { className: "crumbrow" }, el("button", { type: "button", className: "up", title: "Up one level", onclick: () => goUp(items, location, rootHref) }, icon("left"), "Up"), nav);
 }
 // Where Up goes: the crumb before the last one, else the registry. Null at the registry.
-function upHref(items) {
+function upHref(items, rootHref = "#/") {
   if (!items.length) return null;
-  return items.length > 1 ? items[items.length - 2].href : "#/";
+  return items.length > 1 ? items[items.length - 2].href : rootHref;
 }
 // Up is a plain hash assignment, so it adds a history entry and the browser's Back returns to the level just left.
-function goUp(items, loc) {
-  const href = upHref(items);
+function goUp(items, loc, rootHref = "#/") {
+  const href = upHref(items, rootHref);
   if (href) loc.hash = href;
 }
 // The segments of a path as crumb items, each linking to the map at that folder: "a/b" -> a, b.
@@ -1530,7 +1530,7 @@ function diskMap(u, node, nowSecs, onShared, onOther, by = "total") {
     Object.assign(tile.style, { left: (100 * b.x) / MAP_W + "%", top: (100 * b.y) / MAP_H + "%", width: (100 * b.w) / MAP_W + "%", height: (100 * b.h) / MAP_H + "%" });
     const old = k.oldest ? `oldest ${ageWord() === "pulled" ? "pull" : "push"} ${ageDays(k.oldest)} d` : "age unknown";
     tile.title = `${k.kind === "other" ? "Click to list them in the table. " : ""}${k.name}: ${size(k.size)} only ${k.kind === "other" ? "these hold" : "this holds"}${k.held > k.size ? `, ${size(k.held)} in all` : ""}${k.names ? `. ${k.names.slice(0, 12).join(", ")}${k.names.length > 12 ? " and more" : ""}` : ""}`;
-    if (b.w < 80 || b.h < 22) { tile.setAttribute("aria-label", `${k.name}, ${size(k.size)}`); return box.append(tile); } // too small for a readable label: the tooltip and the screen reader name it
+    if (b.w < 80 || b.h < 22) { tile.setAttribute("aria-label", `${k.name}, ${size(weight(k))}`); return box.append(tile); } // too small for a readable label: the tooltip and the screen reader name it
     tile.append(el("span", { className: "dname", textContent: k.name }));
     const shownSize = weight(k), what = by === "total" ? " total" : "";
     if (b.w < 120 && big > 0.004) tile.append(el("span", { className: "dsub", textContent: size(shownSize) }));
@@ -1624,7 +1624,7 @@ async function storagePane(seq) {
       : "Click a header to sort each level. Shared size is what a node uses that something outside it uses too.");
     const byBtn = (v, text, tip) => el("button", { type: "button", title: tip, "aria-pressed": String(prefs.mapBy === v), textContent: text, onclick: () => { prefs.mapBy = v; savePrefs(); void paint(); } });
     bar.replaceChildren(el("div", { role: "group", "aria-label": "View", className: "seg" }, toggleBtn("map", "Map"), toggleBtn("table", "Table")),
-      ...(storageUI.view === "map" ? [el("label", { className: "mut" }, "Size by ", el("div", { role: "group", "aria-label": "Size by", className: "seg" },
+      ...(storageUI.view === "map" ? [el("span", { className: "mut" }, "Size by ", el("div", { role: "group", "aria-label": "Size by", className: "seg" },
         byBtn("total", "Total", "Every byte the block uses, shared layers included"), byBtn("frees", "Frees", "Only the bytes that deleting it frees")))] : []), legend);
     return body();
   };
@@ -2791,9 +2791,7 @@ function pypiCommandsEl(ctx, heading) {
 function pypiCrumbs(n) {
   const parts = [];
   for (let x = n; x && x.kind !== "proot"; x = x.parent) parts.unshift(x);
-  return el("nav", { className: "crumbs", "aria-label": "Path" }, el("a", { href: "#/pypi", textContent: pypiLabel() }),
-    ...parts.map((x, i) => (i === parts.length - 1 ? el("span", { className: x.kind === "ver" ? "t" : "", textContent: x.kind === "ver" ? "==" + x.name : x.name })
-      : el("a", { href: hashOf(x), textContent: x.name }))));
+  return crumbNav(pypiLabel(), parts.map((x) => (x.kind === "ver" ? { text: "==" + x.name, href: hashOf(x), cls: "t" } : { text: x.name, href: hashOf(x) })), "#/pypi");
 }
 const gitlabLink = (path, text) => (path ? el("a", { href: cfg.pypi.gitlab + path, target: "_blank", rel: "noopener noreferrer", textContent: text }) : null);
 const stats = (...items) => el("p", { className: "stats" }, ...items.filter(Boolean).map((t) => el("span", { className: "stat", textContent: t })));

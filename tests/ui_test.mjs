@@ -166,6 +166,7 @@ test("Up goes to the parent folder and Back returns to the level just left", () 
   assert.equal(nav.hash, "#/storage/org");
   goUp([], nav); // at the registry Up does nothing and adds no entry
   assert.equal(nav.stack.length, 4); // the drill-downs and the Up are the four entries
+  assert.equal(upHref([{ text: "pkg", href: "#/pypi/pkg" }], "#/pypi"), "#/pypi"); // PyPI pages go up to the PyPI root, not the registry
 });
 
 test("no navigation replaces the history entry, so Back always steps one level", () => {
