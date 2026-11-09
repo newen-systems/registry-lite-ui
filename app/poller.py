@@ -15,6 +15,7 @@ import bin as B
 
 log = logging.getLogger("poller")
 MAX_BIN_BYTES = 3 << 20  # base64 manifests kept for the bin, so it cannot push the state file over MAX_STATE_BYTES
+MAX_CONFIG = 1 << 20  # largest image config read for a seed time
 MAX_STATE_BYTES = 8 << 20  # a state file over this is neither written nor read
 KINDS = ("image", "helm", "artifact")
 
@@ -104,7 +105,8 @@ class State:
             elif ev and seeds:
                 for e in sorted((e for e in ev if e["type"] == "new" and e["ref"] in seeds), key=lambda e: seeds[e["ref"]][0]):
                     self.seq += 1
-                    self.events.append({**e, "t": seeds[e["ref"]][0], "src": seeds[e["ref"]][1], "seq": self.seq})
+                    self.events.append({**e, "t": min(seeds[e["ref"]][0], now), "src": seeds[e["ref"]][1], "seq": self.seq})  # never in the future
+                self.events = deque(sorted(self.events, key=lambda e: e["t"]))  # a later cycle can bring older tags: keep time order, so a cap drops the oldest
             self.prune(now)
             self.bin_entries(now)  # drops what has expired
             if len(self.meta) > 2 * len(self.tags) + 1000:  # digests of deleted tags, once there are many
@@ -379,10 +381,12 @@ class Poller(threading.Thread):
         return {f"{r}:{t}": done[t] for t in tags}, max(len(todo), 1)
 
     def built(self, repo, digest):
-        """When the image was built, from its config blob (the first platform of an index), or None. Read once per digest."""
+        """When the image was built, from its config blob (the first platform of an index), or None. Read once per digest, unless
+        the registry failed: then None this time and the read is tried again for the next tag on that digest. A failing blob never
+        blocks the baseline."""
         if digest in self.created:
             return self.created[digest]
-        when = None
+        when, final = None, True
         try:
             data = self.bodies.pop(digest, None)
             mtype = ""
@@ -392,14 +396,16 @@ class Poller(threading.Thread):
                 kids = R.children(data, mtype)
                 data = self.client.manifest(repo, kids[0])[0] if kids else b"{}"
             cfg = R.json_load(data).get("config")
-            if isinstance(cfg, dict) and cfg.get("digest"):
+            if isinstance(cfg, dict) and cfg.get("digest") and not (isinstance(cfg.get("size"), int) and cfg["size"] > MAX_CONFIG):
                 made = R.json_load(self.client.call("GET", f"/v2/{repo}/blobs/{R.check_digest(cfg['digest'])}")[2]).get("created")
                 if isinstance(made, str) and R.CREATED_RE.fullmatch(made):
                     when = datetime.fromisoformat(made.replace("Z", "+00:00")).timestamp()
-        except (R.RegistryError, ValueError, AttributeError, TypeError):
+        except R.RegistryError as e:
+            final = e.status == 404 or (e.status == 502 and "invalid" in e.message)  # missing or unreadable stays so. A failing registry is retried
+        except (ValueError, AttributeError, TypeError):
             pass
-        self.created[digest] = when
-        self.bodies.pop(digest, None)
+        if final:
+            self.created[digest] = when
         return when
 
     def seed_time(self, ref, digest):
@@ -448,7 +454,10 @@ class Poller(threading.Thread):
             seeds = {}
             for ref, digest in observed.items():
                 if ref not in self.state.tags:
+                    if self.stop.is_set():
+                        break
                     found = self.seed_time(ref, digest)
+                    self.last_tick = time.monotonic()  # progress, so a long first walk is not mistaken for a stall
                     if found:
                         seeds[ref] = found
         self.state.update(scanned, observed, gone, seeds)

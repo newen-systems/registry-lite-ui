@@ -1686,8 +1686,9 @@ async function doSync() {
   const [rc, names] = await Promise.all([api("/api/recent"), api("/api/repos")]);
   const first = lastSeq === null;
   recent = rc;
-  const evs = first ? [] : rc.events.filter((e) => e.seq > lastSeq);
-  const gap = !first && rc.seq - lastSeq > evs.length; // history was pruned, so refresh everything open
+  const newer = first ? [] : rc.events.filter((e) => e.seq > lastSeq);
+  const evs = newer.filter((e) => !e.src); // tags the UI found at its start are not pushes
+  const gap = !first && rc.seq - lastSeq > newer.length; // history was pruned, so refresh everything open
   lastSeq = rc.seq;
   const grew = applyCatalog(names, !first);
   const touched = new Set(evs.map((e) => repoOf(e.ref)));

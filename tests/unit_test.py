@@ -2047,6 +2047,12 @@ class RecycleBin(unittest.TestCase):
             self.assertIn(path, S.routes(cfg)[1])  # mutate() refuses every POST route in read-only mode and without a login
 
 
+class Late(Clock):
+    """A clock after every time the seed tests use (2033)."""
+    def __init__(self):
+        self.now = 2e9
+
+
 class SeedClient:
     """A registry whose images carry a config blob with a build time. repos: {repo: {tag: digest}}, built: {digest: RFC 3339 time}."""
     def __init__(self, repos, built):
@@ -2075,7 +2081,7 @@ class SeedRecent(unittest.TestCase):
     """The first walk stamps every existing tag with a real time, so Recent is not empty after a start."""
     def test_baseline_seeds_events_oldest_first_from_the_build_time(self):
         reg = SeedClient({"a": {"1": D("1"), "2": D("2"), "3": D("3")}}, {D("1"): "2026-10-03T00:00:00Z", D("2"): "2026-10-01T00:00:00.123456789Z"})
-        st = P.State(clock=Clock(), max_age=10**9)
+        st = P.State(clock=Late(), max_age=10**9)
         p = P.Poller(reg, st)
         p.cycle()
         evs = list(st.events)
@@ -2095,13 +2101,13 @@ class SeedRecent(unittest.TestCase):
         os.makedirs(os.path.dirname(link))
         with open(link, "w"):
             pass
-        os.utime(link, (5000, 5000))
+        os.utime(link, (1.9e9, 1.9e9))
         reg = SeedClient({"a": {"1": D("1")}}, {D("1"): "2026-10-03T00:00:00Z"})
-        st = P.State(clock=Clock(), max_age=10**9)
+        st = P.State(clock=Late(), max_age=10**9)
         p = P.Poller(reg, st, mount=root)
         p.cycle()
         (e,) = st.events
-        self.assertEqual((e["t"], e["src"]), (5000, "storage"))
+        self.assertEqual((e["t"], e["src"]), (1.9e9, "storage"))
         self.assertEqual(p.created, {})  # no config was read for it
 
     def test_a_restart_with_a_state_file_adds_no_events(self):
@@ -2109,24 +2115,53 @@ class SeedRecent(unittest.TestCase):
         self.addCleanup(shutil.rmtree, d)
         path = os.path.join(d, "state.json")
         reg = SeedClient({"a": {"1": D("1")}}, {D("1"): "2026-10-03T00:00:00Z"})
-        st = P.State(path, clock=Clock(), max_age=10**9)
+        st = P.State(path, clock=Late(), max_age=10**9)
         P.Poller(reg, st).cycle()
         st.save(force=True)
-        again = P.State(path, clock=Clock(), max_age=10**9)
+        again = P.State(path, clock=Late(), max_age=10**9)
         P.Poller(reg, again).cycle()
         self.assertEqual(list(again.events), list(st.events))
         self.assertEqual(len(again.events), 1)
 
     def test_seeds_keep_the_event_caps_newest_first(self):
         reg = SeedClient({"a": {str(i): D(str(i)) for i in range(1, 6)}}, {D(str(i)): f"2026-10-0{i}T00:00:00Z" for i in range(1, 6)})
-        st = P.State(clock=Clock(), max_events=3, max_age=10**9)
+        st = P.State(clock=Late(), max_events=3, max_age=10**9)
         P.Poller(reg, st).cycle()
         self.assertEqual([e["ref"] for e in st.events], ["a:3", "a:4", "a:5"])  # the oldest two are dropped
 
     def test_a_tag_pushed_during_the_baseline_is_not_given_a_seed_time(self):
         reg = SeedClient({"a": {"1": D("1")}}, {D("1"): "2026-10-03T00:00:00Z"})
-        st = P.State(clock=Clock(), max_age=10**9)
+        st = P.State(clock=Late(), max_age=10**9)
         st.mark_baselined()
         P.Poller(reg, st).cycle()
         (e,) = st.events
         self.assertNotIn("src", e)  # seen live, with the time it was seen
+
+
+class SeedRecentLater(unittest.TestCase):
+    def test_seeds_from_later_cycles_keep_time_order_and_are_not_in_the_future(self):
+        reg = SeedClient({"a": {"1": D("1")}, "b": {"2": D("2")}}, {D("1"): "2026-10-05T00:00:00Z", D("2"): "2026-10-01T00:00:00Z"})
+        st = P.State(clock=Late(), max_age=10**9)
+        p = P.Poller(reg, st, max_tags=1)  # one repository per cycle
+        p.cycle()
+        p.cycle()
+        self.assertEqual([e["ref"] for e in st.events], ["b:2", "a:1"])  # b is older although it came later
+        self.assertEqual([e["ref"] for e in st.snapshot(1)["events"]], ["a:1"])
+        reg2 = SeedClient({"a": {"1": D("1")}}, {D("1"): "2099-01-01T00:00:00Z"})
+        st2 = P.State(clock=Late(), max_age=10**9)
+        P.Poller(reg2, st2).cycle()
+        self.assertEqual(st2.events[0]["t"], 2e9)  # clamped to now
+
+    def test_a_failing_registry_skips_the_seed_without_blocking_the_baseline(self):
+        reg = SeedClient({"a": {"1": D("1")}}, {D("1"): "2026-10-05T00:00:00Z"})
+        original, down = reg.call, [True]
+
+        def call(*a, **k):
+            if down[0]:
+                raise R.RegistryError(502, "down")
+            return original(*a, **k)
+        reg.call = call
+        st = P.State(clock=Late(), max_age=10**9)
+        p = P.Poller(reg, st)
+        p.cycle()
+        self.assertEqual((list(st.events), st.baselined, p.created), ([], True, {}))  # nothing remembered, so a tag on that digest is tried again
