@@ -308,8 +308,25 @@ def routes(cfg):
 
     def usage(q):
         snap = cfg.usage.snapshot() if cfg.usage else None
-        keep = ("updated", "mount", "total", "disk", "files", "tags", "blobs", "tree")
-        return {"interval": cfg.usage_interval, "history": cfg.state.usage_history(), **({k: snap[k] for k in keep} if snap else {"updated": None})}
+        keep = ("updated", "mount", "total", "disk", "files", "tags", "blobs", "tree", "atime", "stale", "unreferenced")
+        return {"interval": cfg.usage_interval, "history": cfg.state.usage_history(), "fs": U.fs_usage(cfg.storage_mount) if cfg.storage_mount else None,
+                **({k: snap[k] for k in keep} if snap else {"updated": None})}
+
+    def storage_repo(q):  # the rows of a repository's Storage tab, from the latest scan
+        repo = R.check_repo(one(q, "repo"))
+        snap = cfg.usage.snapshot() if cfg.usage else None
+        if not snap:
+            return {"updated": None, "blobs": [], "tags": []}
+        pushed = {}
+        for ref, v in list(cfg.state.tags.items()):
+            if P.repo_of(ref) == repo:
+                tag = ref.rpartition(":")[2]
+                links = [h["time"] for h in R.tag_history(cfg.storage_mount, repo, tag) if h["digest"] == v["digest"]] if cfg.storage_mount else []
+                pushed[tag] = links[0] if links else int(v["changed"])
+        return {"updated": snap["updated"], **U.repo_detail(snap, snap["by_digest"], repo, pushed)}
+
+    def disk(q):  # the filesystem of the registry storage, cheap enough to ask at every sync
+        return {"fs": U.fs_usage(cfg.storage_mount) if cfg.storage_mount else None}
 
     def ages(q):  # when each tag of a repository was last used, from the latest storage scan
         snap = cfg.usage.snapshot() if cfg.usage and cfg.storage_mount else None
@@ -343,6 +360,8 @@ def routes(cfg):
         "/api/usage": usage,
         "/api/bin": bin_view,
         "/api/ages": ages,
+        "/api/storage/repo": storage_repo,
+        "/api/disk": disk,
         "/api/history": lambda q: R.tag_history(cfg.storage_mount, one(q, "repo"), one(q, "tag")),  # [] without the storage
         "/api/manifest": lambda q: view_manifest(c, one(q, "repo"), one(q, "ref"), q.get("tags", ["1"])[0] != "0", cfg.storage_mount),
     }
