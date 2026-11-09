@@ -308,7 +308,7 @@ def routes(cfg):
 
     def usage(q):
         snap = cfg.usage.snapshot() if cfg.usage else None
-        keep = ("updated", "mount", "total", "disk", "files", "tags", "blobs", "tree", "atime", "stale", "unreferenced")
+        keep = ("updated", "mount", "total", "disk", "files", "tags", "blobs", "tree", "atime", "stale", "unreferenced", "unread")
         return {"interval": cfg.usage_interval, "history": cfg.state.usage_history(), "fs": U.fs_usage(cfg.storage_mount) if cfg.storage_mount else None,
                 **({k: snap[k] for k in keep} if snap else {"updated": None})}
 

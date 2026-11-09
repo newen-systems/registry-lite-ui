@@ -4,6 +4,18 @@ registry-lite-ui is a web UI for a plain `registry:2` that browses, copies, move
 
 `podman-compose up -d` with `compose.yml` (registry and UI), or `podman-compose -f compose.ui.yml up -d` with `REGISTRY_URL` set for a registry that already runs. `docker compose` works the same way. Pin `UI_IMAGE` to a version or a digest in your `.env`.
 
+## Changes in 0.3.5
+
+### New Features
+
+- The Storage view follows every path segment: folder, folder, repository, tag, so `org/team-a/backend/api` sits under `org`, `team-a` and `backend`. The map shows one folder level at a time (click a folder to open it, crumbs show the segment names) with blocks for subfolders, repositories and tags. Items under 2% of the view are grouped into one "N smaller items" block. The table expands at every level. A path can be a repository and a folder at once ([#55](https://github.com/newen-systems/registry-lite-ui/pull/55))
+- A layer used by more than one item is counted once in a block that says what shares it ("Layers used by more than one top-level folder", "...in org/team-a") at the lowest folder that holds them all. Clicking it, or expanding it in the table, lists the folders or repositories that use it and the bytes each uses ([#55](https://github.com/newen-systems/registry-lite-ui/pull/55))
+- Helm charts and other OCI artifacts are counted like images and show their own icon in the table. Tags whose manifests could not be read are listed in a note instead of being left out silently, and a line says Python packages live in GitLab and are not counted ([#55](https://github.com/newen-systems/registry-lite-ui/pull/55))
+
+### Bug Fixes
+
+- A push or delete now triggers a new storage scan within a minute, so a chart or image pushed after the last hourly scan shows in Storage and in the totals. The growth history still gets one point per scan interval ([#55](https://github.com/newen-systems/registry-lite-ui/pull/55))
+
 ## Changes in 0.3.4
 
 ### Chores
