@@ -4,6 +4,12 @@ registry-lite-ui is a web UI for a plain `registry:2` that browses, copies, move
 
 `podman-compose up -d` with `compose.yml` (registry and UI), or `podman-compose -f compose.ui.yml up -d` with `REGISTRY_URL` set for a registry that already runs. `docker compose` works the same way. Pin `UI_IMAGE` to a version or a digest in your `.env`.
 
+## Changes in 0.3.1
+
+### Bug Fixes
+
+- The Recent intro says which times are seen live and which come from storage or the image, and the Storage tab on a repository uses the same tab style as the rest of the app ([#51](https://github.com/newen-systems/registry-lite-ui/pull/51))
+
 ## Changes in 0.3.0
 
 ### New Features

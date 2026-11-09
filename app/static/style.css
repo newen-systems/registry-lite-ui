@@ -343,8 +343,8 @@ a.dblk:hover { text-decoration:none; outline:2px solid var(--fg); outline-offset
 .storagetable td.num, .storagetable td:nth-child(2), .storagetable td:nth-child(3) { font-variant-numeric:tabular-nums; }
 .storagetable tr.on { background:color-mix(in srgb, var(--amber) 10%, transparent); }
 .chevbtn { height:20px; width:20px; padding:0; margin:0 var(--s1) 0 0; } .chevbtn svg { transform:none; } .chevbtn svg.open { transform:rotate(90deg); } .chevgap { display:inline-block; width:24px; }
-.tabs { display:flex; gap:var(--s1); border-bottom:1px solid var(--line); margin:var(--s3) 0; }
-.tabs a { padding:var(--s2) var(--s4); color:var(--mut); border-bottom:2px solid transparent; text-decoration:none; } .tabs a.on { color:var(--fg); font-weight:600; border-bottom-color:var(--acc); }
+.tabs a { padding:var(--s2) var(--s3); border-bottom:2px solid transparent; color:var(--mut); font-size:14px; margin-bottom:-1px; text-decoration:none; } .tabs a:hover { color:var(--fg); } .tabs a[aria-selected=true] { color:var(--acc); border-bottom-color:var(--acc); font-weight:600; }
+.tabbar { display:flex; border-bottom:1px solid var(--line); margin:var(--s3) 0; }
 .tablebox { border:1px solid var(--line); border-radius:var(--r2); overflow:auto; }
 .sbar { display:block; width:140px; height:6px; border-radius:3px; background:var(--line); } .sfill { display:block; height:6px; border-radius:3px; background:var(--acc); } .sfill.old { background:light-dark(#c2410c, #f0883e); }
 .selbar { position:sticky; bottom:0; display:flex; align-items:center; gap:var(--s4); flex-wrap:wrap; margin-top:var(--s3); padding:var(--s3) var(--s4); border-radius:var(--r2); background:var(--acc-soft); border:1px solid var(--acc); }
