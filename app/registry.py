@@ -33,6 +33,7 @@ IMAGE_TYPES = {
     "application/vnd.docker.distribution.manifest.v2+json",
 }
 IMAGE_CONFIGS = {"application/vnd.docker.container.image.v1+json", "application/vnd.oci.image.config.v1+json"}
+CREATED_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})")  # RFC 3339, the form image config blobs use
 HELM_CONFIG = "application/vnd.cncf.helm.config.v1+json"
 ACCEPT = ", ".join(sorted(INDEX_TYPES | IMAGE_TYPES))
 DELETE_OFF = "Deletion is disabled on this registry. Set REGISTRY_STORAGE_DELETE_ENABLED=true and restart it."

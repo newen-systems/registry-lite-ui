@@ -7,6 +7,7 @@ import tempfile
 import threading
 import time
 from collections import deque
+from datetime import datetime
 
 import registry as R
 import usage as U
@@ -81,8 +82,10 @@ class State:
         if path:
             self.load()
 
-    def update(self, scanned, observed, gone=()):
-        """Apply one poll. `scanned` repos were walked completely, `observed` maps their refs to digests, `gone` repos left the catalog."""
+    def update(self, scanned, observed, gone=(), seeds=None):
+        """Apply one poll. `scanned` repos were walked completely, `observed` maps their refs to digests, `gone` repos left the catalog.
+        `seeds` maps a ref to (seconds, source) for tags found before the first full walk finished. Each becomes a "new" event
+        with that time and source, oldest first, so Recent shows what was already there. Once baselined, seeds are ignored."""
         now = self.clock()
         with self.cond:
             seen = {repo_of(k) for k in observed}
@@ -98,6 +101,10 @@ class State:
                 for e in ev:
                     self.seq += 1
                     self.events.append({**e, "seq": self.seq})
+            elif ev and seeds:
+                for e in sorted((e for e in ev if e["type"] == "new" and e["ref"] in seeds), key=lambda e: seeds[e["ref"]][0]):
+                    self.seq += 1
+                    self.events.append({**e, "t": seeds[e["ref"]][0], "src": seeds[e["ref"]][1], "seq": self.seq})
             self.prune(now)
             self.bin_entries(now)  # drops what has expired
             if len(self.meta) > 2 * len(self.tags) + 1000:  # digests of deleted tags, once there are many
@@ -277,9 +284,11 @@ class Poller(threading.Thread):
     list answers 404. While one waits like that, the walk runs every `burst` seconds, for at most `burst_max` seconds
     after it was first seen, so its tags show within seconds of the manifest. burst 0 turns this off.
     A viewer may ask for a shorter interval while its page is open (want), never below `minimum`. The shortest asked for wins."""
-    def __init__(self, client, state, interval=30, max_tags=500, burst=5, burst_max=600, minimum=10):
+    def __init__(self, client, state, interval=30, max_tags=500, burst=5, burst_max=600, minimum=10, mount=None):
         super().__init__(daemon=True, name="poller")
-        self.client, self.state, self.interval, self.max_tags = client, state, interval, max_tags
+        self.client, self.state, self.interval, self.max_tags, self.mount = client, state, interval, max_tags, mount
+        self.created = {}  # digest -> image build time, or None, read once for the seeds
+        self.bodies = {}  # digest -> manifest bytes learn() just read, so a seed does not read it again
         self.burst, self.burst_max, self.minimum = burst, burst_max, minimum
         self.wants, self.wants_lock = {}, threading.Lock()  # viewer -> (seconds asked for, monotonic time it expires)
         self.cursor, self.covered, self.stop, self.kick = "", set(), threading.Event(), threading.Event()
@@ -343,6 +352,8 @@ class Poller(threading.Thread):
                 data = self.client.manifest(r, digest)[0]
             except R.RegistryError:  # not read this time, tried again next cycle
                 return
+            if not self.state.baselined:
+                self.bodies[digest] = data
             try:
                 config = R.json_load(data).get("config")
                 kind = R.kind_of(config.get("mediaType") if isinstance(config, dict) else None)
@@ -366,6 +377,40 @@ class Poller(threading.Thread):
             return None, len(todo)
         self.partial = ("", {})
         return {f"{r}:{t}": done[t] for t in tags}, max(len(todo), 1)
+
+    def built(self, repo, digest):
+        """When the image was built, from its config blob (the first platform of an index), or None. Read once per digest."""
+        if digest in self.created:
+            return self.created[digest]
+        when = None
+        try:
+            data = self.bodies.pop(digest, None)
+            mtype = ""
+            if data is None:
+                data, mtype, _ = self.client.manifest(repo, digest)
+            if mtype in R.INDEX_TYPES:
+                kids = R.children(data, mtype)
+                data = self.client.manifest(repo, kids[0])[0] if kids else b"{}"
+            cfg = R.json_load(data).get("config")
+            if isinstance(cfg, dict) and cfg.get("digest"):
+                made = R.json_load(self.client.call("GET", f"/v2/{repo}/blobs/{R.check_digest(cfg['digest'])}")[2]).get("created")
+                if isinstance(made, str) and R.CREATED_RE.fullmatch(made):
+                    when = datetime.fromisoformat(made.replace("Z", "+00:00")).timestamp()
+        except (R.RegistryError, ValueError, AttributeError, TypeError):
+            pass
+        self.created[digest] = when
+        self.bodies.pop(digest, None)
+        return when
+
+    def seed_time(self, ref, digest):
+        """(seconds, source) for a tag seen before the baseline: when it took its digest (the tag link's file time, source
+        storage) else when the image was built (source config), else None."""
+        repo, _, tag = ref.rpartition(":")
+        for h in R.tag_history(self.mount, repo, tag) if self.mount else []:
+            if h["digest"] == digest:
+                return h["time"], "storage"
+        built = self.built(repo, digest)
+        return (built, "config") if built else None
 
     def cycle(self):
         repos = sorted(self.client.catalog())
@@ -398,7 +443,18 @@ class Poller(threading.Thread):
         kept = (set(self.pending) & set(repos)) - scanned - skipped
         self.pending = {r: self.pending.get(r, now) for r in pending | kept}
         gone = {k.rsplit(":", 1)[0] for k in self.state.tags} - set(repos)
-        self.state.update(scanned, observed, gone)
+        seeds = None
+        if not self.state.baselined:  # the first walk: stamp what is already there with a real time instead of dropping it
+            seeds = {}
+            for ref, digest in observed.items():
+                if ref not in self.state.tags:
+                    found = self.seed_time(ref, digest)
+                    if found:
+                        seeds[ref] = found
+        self.state.update(scanned, observed, gone, seeds)
+        if self.state.baselined:
+            self.bodies.clear()
+            self.created.clear()
         if not self.state.baselined:
             self.covered |= scanned | skipped  # a repository that cannot be read (a push that never finished) must not hold off the baseline
             if self.covered >= set(repos):
