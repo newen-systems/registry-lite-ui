@@ -1813,3 +1813,21 @@ class UsageScan(unittest.TestCase):
         self.assertEqual(seen, [("a", D("a"))])  # one read for two tags on a digest
         u.scan()
         self.assertEqual(len(seen), 1)  # a digest never changes, so it is not read again
+
+
+class UsageRetry(unittest.TestCase):
+    def test_a_failed_manifest_read_is_tried_again_next_scan(self):
+        image = b'{"config":{"digest":"%s","size":3},"layers":[]}' % D("1").encode()
+        up = [False]
+
+        class Client:
+            def manifest(self, repo, ref, head=False):
+                if not up[0]:
+                    raise R.RegistryError(502, "down")
+                return image, "", ref
+        st = P.State(clock=Clock())
+        st.update({"a"}, {"a:1": D("a")})
+        u = U.Usage(Client(), st, None, clock=Clock())
+        self.assertEqual(u.scan()["total"], 0)
+        up[0] = True
+        self.assertEqual(u.scan()["total"], len(image) + 3)

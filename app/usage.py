@@ -241,7 +241,7 @@ class Usage(threading.Thread):
         for ref, digest in tags.items():
             if digest not in cache:
                 cache[digest] = self.cache.get(digest) or blobs_of(self.reader(ref.rpartition(":")[0]), digest)
-        self.cache = cache  # digests no tag points at any more are dropped
+        self.cache = {d: v for d, v in cache.items() if v[0]}  # digests no tag points at any more are dropped; a failed read is tried again
         ages = {}
         if self.mount:  # layers only: the UI itself reads manifests and configs, which would make every image look used
             for _, layers in cache.values():

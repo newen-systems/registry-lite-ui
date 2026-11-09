@@ -858,7 +858,8 @@ const TAG_COLUMNS = [
 ];
 const USED_TIP = "When the newest blob of the tag was last used, from the registry storage: the access time where the host records it, else the modification time. Sorts oldest first. As of the last usage scan.";
 const USED_COLUMN = { key: "used", label: "Last used", tip: USED_TIP, val: (t) => t.parent.ages?.[t.tag]?.[0] ?? null, cmp: numCmp };
-const tagColumns = () => (cfg.storageMount ? [...TAG_COLUMNS, USED_COLUMN] : TAG_COLUMNS);
+const hasAges = () => !!(cfg.storageMount && cfg.usage); // the ages come from the usage scan
+const tagColumns = () => (hasAges() ? [...TAG_COLUMNS, USED_COLUMN] : TAG_COLUMNS);
 // Recent push: when the poller saw the tag take its digest. A tag it has not seen yet came after its last walk, so it goes first.
 const pushedAt = (t) => t.changed ?? Infinity;
 const tagDefault = (a, b) => (prefs.tagSort === "recent" ? pushedAt(b) - pushedAt(a) : 0) || tagCompare(b.tag, a.tag); // then newest version first
@@ -970,7 +971,7 @@ function tagRow(t) { // a table row for a tag, whose kind, size, platforms and b
   const ref = `${cfg.registryHost || "<REGISTRY>"}/${t.parent.path}:${t.tag}`;
   r.tr = el("tr", {}, el("td", {}, ico, rowCopy(ref, `Copy image reference for ${t.tag}`)),
     el("td", { className: "nw dcell" }, code(short(t.digest)), rowCopy(t.digest, `Copy digest for ${t.tag}`), r.link), sz, plat, built, el("td", { className: "mut", textContent: ago(t.changed) }),
-    ...(cfg.storageMount ? [usedCell(t.parent.ages?.[t.tag])] : []));
+    ...(hasAges() ? [usedCell(t.parent.ages?.[t.tag])] : []));
   return r;
 }
 // The mark in the Digest column of each row whose digest another tag shares, wherever that tag is in the list. Neighbouring
@@ -1210,7 +1211,7 @@ function manifestProps(n, m, path, sharing) {
   if (m.created) props.push(tableRow("Created", el("span", { title: new Date(m.created).toLocaleString(), textContent: ago(createdMs(m) / 1000) })));
   props.push(tableRow("Tags", sharing.join(", ") || "none"));
   if (n.kind === "tag" && n.changed) props.push(tableRow("Changed", el("span", { title: new Date(n.changed * 1000).toLocaleString(), textContent: ago(n.changed) })));
-  if (n.kind === "tag" && cfg.storageMount) props.push(tableRow("Last used", usedEl(n.parent.ages?.[n.tag])));
+  if (n.kind === "tag" && hasAges()) props.push(tableRow("Last used", usedEl(n.parent.ages?.[n.tag])));
   if (m.platform) props.push(tableRow("Platform", `${m.platform.os}/${m.platform.architecture}`));
   if (m.config) props.push(tableRow("Config", code(m.config)));
   return props;
@@ -1430,7 +1431,7 @@ function mapSection(u) {
     const trail = [{ name: "All", path: [] }, ...usageView.path.map((name, i) => ({ name, path: usageView.path.slice(0, i + 1) }))];
     const crumb = el("nav", { className: "crumbs", "aria-label": "Map level" }, ...trail.map((c, i) => (i === trail.length - 1 ? el("span", { textContent: c.name })
       : el("button", { type: "button", className: "linkbtn", textContent: c.name, onclick: () => { usageView.path = c.path; draw(); } }))));
-    const kids = limitKids(node.kids, MAP_TILES);
+    const kids = limitKids(node.kids, 500); // the table lists what the map folds into one tile
     const rows = kids.map((k) => {
       const act = tileAction(k, draw);
       return el("tr", {}, el("td", {}, act ? el("button", { type: "button", className: "linkbtn", textContent: k.name, onclick: act }) : k.name), el("td", { textContent: size(k.size) }),
