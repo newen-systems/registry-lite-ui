@@ -4,6 +4,12 @@ registry-lite-ui is a web UI for a plain `registry:2` that browses, copies, move
 
 `podman-compose up -d` with `compose.yml` (registry and UI), or `podman-compose -f compose.ui.yml up -d` with `REGISTRY_URL` set for a registry that already runs. `docker compose` works the same way. Pin `UI_IMAGE` to a version or a digest in your `.env`.
 
+## Changes in 0.3.2
+
+### Bug Fixes
+
+- The size beside a folder or repository in the tree is its unique size, and the repository Storage tab says which figure is the total with shared layers and which is the unique size the tree shows, so the two no longer look like a disagreement ([#52](https://github.com/newen-systems/registry-lite-ui/pull/52))
+
 ## Changes in 0.3.1
 
 ### Bug Fixes
