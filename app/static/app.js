@@ -1623,7 +1623,7 @@ async function storagePane(seq) {
     sharedBox.replaceChildren();
     foot.replaceChildren(storageUI.view === "map" ? `Click a folder to open it, a repository to pick tags to delete. ${prefs.mapBy === "total" ? "Area is every byte a block uses, so a layer used by two blocks counts in both and the blocks add up to more than the disk holds." : "Area is the bytes only a block holds, which deleting it frees. A layer several items use counts once, in a block named for what shares it, at the lowest folder that holds them all."}`
       : "Click a header to sort each level. Shared size is what a node uses that something outside it uses too.");
-    const byBtn = (v, text, tip) => el("button", { type: "button", title: tip, "aria-pressed": String(prefs.mapBy === v), textContent: text, onclick: () => { prefs.mapBy = v; savePrefs(); scheduleTree(); void paint(); } });
+    const byBtn = (v, text, tip) => el("button", { type: "button", title: tip, "aria-pressed": String(prefs.mapBy === v), textContent: text, onclick: () => { prefs.mapBy = v; savePrefs(); scheduleTree(); void renderPane(); } }); // the pane is drawn again: the line above the map follows too
     bar.replaceChildren(el("div", { role: "group", "aria-label": "View", className: "seg" }, toggleBtn("map", "Map"), toggleBtn("table", "Table")),
       ...(storageUI.view === "map" ? [el("span", { className: "mut" }, "Size by ", el("div", { role: "group", "aria-label": "Size by", className: "seg" },
         byBtn("total", "Total", "Every byte the block uses, shared layers included"), byBtn("frees", "Frees", "Only the bytes that deleting it frees")))] : []), legend);
