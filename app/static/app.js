@@ -1634,7 +1634,7 @@ async function storagePane(seq) {
   const pypi = cfg.pypi && !cfg.pypi.locked ? [el("p", { className: "mut", textContent: "Python packages are stored in GitLab, not on this registry's disk, so they are not counted here." })] : [];
   const hollow = node.kids.filter((k) => k.size === 0 && k.tags > 0).length;
   const here = [...(hollow && storageUI.view === "map" && prefs.mapBy === "frees" ? [el("p", { className: "mut", textContent: `${plural(hollow, "item")} here ${hollow === 1 ? "holds" : "hold"} no bytes of their own (every layer is shared), so this map has no block for ${hollow === 1 ? "it" : "them"}. Size by Total shows ${hollow === 1 ? "it" : "them"}, and so does the table.` })] : []),
-    ...(shownPath ? [el("p", { className: "mut" }, `${size(node.size)} in ${plural(node.tags, "tag")} under ${shownPath}. `, ...(node.kind === "repo" ? [el("a", { href: repoHash(node.repo), textContent: "Open the repository" })] : []))] : [])];
+    ...(shownPath ? [el("p", { className: "mut" }, `${size(prefs.mapBy === "total" ? node.held : node.size)} ${prefs.mapBy === "total" ? "total" : "unique"} in ${plural(node.tags, "tag")} under ${shownPath}. `, ...(node.kind === "repo" ? [el("a", { href: repoHash(node.repo), textContent: "Open the repository" })] : []))] : [])];
   showMain(crumbNav(regLabel(), [{ text: "Storage", href: "#/storage" }, ...pathCrumbs(shownPath, "#/storage")]),
     el("div", { className: "storagehead" }, el("h2", { textContent: "Storage" }),
       el("span", { className: "mut", textContent: `${size(u.total)} in ${plural(u.tags, "tag")} across ${plural(repos.length, "repository", "repositories")}. Sizes count each layer once. Scanned ${ago(u.updated)}.${note}` })),
@@ -2560,7 +2560,7 @@ function settings() {
         ...(cfg.pypi ? [row("s-psort", "Python packages", "Order of packages.", segmented("s-psort", [["name", "Name"], ["recent", "Recent"]], "packageSort", apply))] : []),
         row("s-rows", "Rows per page", "Rows a list shows before Show more.", selectEl("s-rows", "pageSize", CHOICES.pageSize, String, apply)),
         row("s-empty", "Show empty repositories", "Repositories with no tags. The registry cannot delete them.", switchEl("s-empty", "showEmpty", apply)),
-        ...(cfg.usage ? [row("s-sizes", "Show sizes in the tree", "The unique size of each folder and repository, with a bar against the largest.", switchEl("s-sizes", "treeSizes", apply))] : [])),
+        ...(cfg.usage ? [row("s-sizes", "Show sizes in the tree", "The unique size of each folder and repository (the bytes only it holds, which deleting it frees), with a bar against the largest. The Storage map can show the total instead.", switchEl("s-sizes", "treeSizes", apply))] : [])),
       section("Lifecycle", lifecycleRow()),
       section("Live updates", row("s-live", "Auto-refresh", "Update the tree and lists as the registry changes.", switchEl("s-live", "live", apply)), refreshRow, pollRow,
         row("s-notify", "Notify on push", canNotify() ? "A desktop notification for each push while this window is not in focus." : "Needs the page on HTTPS or localhost.", notifyCtl))),
