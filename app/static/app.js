@@ -2398,10 +2398,14 @@ function transfer(o) {
     function update() {
       const dstErr = destError(o, st.path), tErr = tagError(st.tag);
       const node = tree.byPath.get(st.path), exists = !dstErr && !!node?.repo;
+      // The destination exists but its tag list has not loaded yet, so whether the tag is taken is unknown. Block until it is,
+      // otherwise a fast click copies or moves onto an existing tag with no warning.
+      const pending = exists && !node.fresh && !tErr;
       const note = tagNote(o, st, node, dstErr, tErr);
       pathStat.replaceChildren(pathBadge(o, st.path, dstErr, node));
-      tagStat.replaceChildren(...(note ? [el("span", { className: note.cls, textContent: note.text })] : []));
-      go.disabled = !!(o.block || dstErr || note?.block);
+      tagStat.replaceChildren(...(pending ? [el("span", { className: "mut", textContent: "Checking the destination..." })]
+        : note ? [el("span", { className: note.cls, textContent: note.text })] : []));
+      go.disabled = !!(o.block || dstErr || note?.block || pending);
       preview.replaceChildren(...previewEls(dstErr || tErr, `${cfg.registryHost || "<REGISTRY>"}/${st.path}:${st.tag}`));
       if (exists && !node.fresh) void ensureTags(node).then(update); // the tags of an existing destination, to tell whether the tag is taken
       chips.draw();
