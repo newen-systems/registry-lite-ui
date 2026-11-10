@@ -93,6 +93,7 @@ const ICONS = {
   drive: [["s", "M3 4.5h10A1.5 1.5 0 0 1 14.5 6v4a1.5 1.5 0 0 1-1.5 1.5H3A1.5 1.5 0 0 1 1.5 10V6A1.5 1.5 0 0 1 3 4.5zM1.5 8.2h13M11.2 9.9h.01M13 9.9h.01"]], // a hard drive: a box, a rule, two lights
   tag: [["s", "M2 2.5h5.2l6.3 6.3-4.7 4.7L2.5 7.2V2.5zM5 5h.01"]],
   pypi: [["", "M8 1.5l5.6 3.1L8 7.7 2.4 4.6z"], ["s", "M2.4 5.5v5.9L8 14.5V8.6zM13.6 5.5v5.9L8 14.5"]],
+  trash: [["s", "M3 4.5h10M6.5 4.5V3a1 1 0 0 1 1-1h1a1 1 0 0 1 1 1v1.5M4.5 4.5l.6 8a1 1 0 0 0 1 .95h3.8a1 1 0 0 0 1-.95l.6-8M6.7 7v4M9.3 7v4"]],
 };
 const iconCache = new Map();
 function icon(name, cls) { // built once per name and class, then cloned: a long tree makes thousands of them
@@ -1182,8 +1183,10 @@ function repoPane(n, tab = "tags") {
   const kids = visibleKids(n).length ? [el("h3", { textContent: "Folders" }), ...childrenList(n)] : [];
   showMain(...head, ...tags, ...kids, commandsEl(n.path, "", "", repoKind(n)));
 }
-function folderPane(n) {
-  showMain(crumbs(n), el("h2", {}, el("span", { className: "ico" }, icon("folderOpen")), n.path), ...(visibleKids(n).length ? childrenList(n) : []));
+function folderPane(n, tab = "folders") {
+  const head = [crumbs(n), el("h2", {}, el("span", { className: "ico" }, icon("folderOpen")), n.path), ...folderTabs(n, tab)];
+  if (tab === "storage") return showMain(...head, ...folderStorage(n));
+  showMain(...head, ...(visibleKids(n).length ? childrenList(n) : []));
 }
 
 // The tagged indexes this digest is a child of. The server refuses the delete or move anyway, this says so before the click.
@@ -1310,7 +1313,12 @@ async function drawPane(n, seq) {
   if (n.kind === "pkg") return pkgPane(n);
   if (n.kind === "ver") return verPane(n);
   if (n.kind !== "node") return manifestPane(n, seq);
-  if (!n.repo) return folderPane(n);
+  if (!n.repo) {
+    const ftab = folderTab();
+    if (ftab === "storage") await loadStorage();
+    if (seq === paneSeq) folderPane(n, ftab);
+    return;
+  }
   const tab = repoTab();
   await Promise.all([ensureTags(n), loadAges(n), tab === "storage" ? Promise.all([loadStorage(), loadDetail(n)]) : null]);
   if (seq === paneSeq) repoPane(n, tab);
@@ -1646,15 +1654,22 @@ async function storagePane(seq) {
 async function loadDetail(n) {
   try { n.detail = await api("/api/storage/repo?repo=" + encodeURIComponent(n.path)); } catch (e) { n.detail = null; n.detailErr = e.message; }
 }
-const repoTab = () => {
-  let h = location.hash;
-  try { h = decodeURIComponent(h); } catch (e) { /* the raw hash is tested */ }
-  return /\?tab=storage$/.test(h) && cfg.usage ? "storage" : "tags";
-};
+const repoTab = () => tabFromHash() || "tags";
 function repoTabs(n, tab) {
   if (!cfg.usage) return [];
   const t = (label, href, on) => el("a", { role: "tab", href, "aria-selected": String(on), textContent: label });
   return [el("div", { className: "tabbar" }, el("div", { role: "tablist", className: "tabs" }, t("Tags", hashOf(n), tab === "tags"), t("Storage", repoHash(n.path), tab === "storage")))];
+}
+const tabFromHash = () => {
+  let h = location.hash;
+  try { h = decodeURIComponent(h); } catch (e) { /* the raw hash is tested */ }
+  return /\?tab=storage$/.test(h) && cfg.usage ? "storage" : "";
+};
+const folderTab = () => tabFromHash() || "folders";
+function folderTabs(n, tab) {
+  if (!cfg.usage) return [];
+  const t = (label, href, on) => el("a", { role: "tab", href, "aria-selected": String(on), textContent: label });
+  return [el("div", { className: "tabbar" }, el("div", { role: "tablist", className: "tabs" }, t("Folders", hashOf(n), tab === "folders"), t("Storage", hashOf(n) + "?tab=storage", tab === "storage")))];
 }
 // The tags a quick-select choice picks: "none", "keep10", or a number of days not used. Null (nothing changes) for anything else.
 function quickSelect(value, rows, nowSecs) {
@@ -1716,6 +1731,14 @@ function repoStorage(n) {
   const paintRows = () => {
     const col = cols.find((c) => c.key === st.sort.key);
     const list = sortItems(rows, col, st.sort.dir, (a, b) => tagCompare(b.tag, a.tag));
+    const keys = list.map((t) => t.tag);
+    const pick = (tag, on, range) => { // shift-click selects or clears the range from the last clicked row to this one
+      const from = keys.indexOf(st.anchor), to = keys.indexOf(tag);
+      const span = range && from >= 0 && to >= 0 ? keys.slice(Math.min(from, to), Math.max(from, to) + 1) : [tag];
+      for (const k of span) if (on) st.picked.add(k); else st.picked.delete(k);
+      st.anchor = tag;
+      draw();
+    };
     const head = cols.map((c) => {
       const on = st.sort.key === c.key;
       return el("th", { "aria-sort": on ? (st.sort.dir < 0 ? "descending" : "ascending") : "none" }, el("button", { type: "button", className: "thbtn", title: c.tip || "", "data-fk": "s:" + c.key,
@@ -1726,11 +1749,12 @@ function repoStorage(n) {
     const tr = (t) => {
       const on = st.picked.has(t.tag);
       const stale = on || (t.used && t.used[0] < cut(180));
-      const b = el("input", { type: "checkbox", checked: on, "aria-label": `Select ${t.tag}`, "data-fk": "t:" + t.tag, onchange: () => { if (b.checked) st.picked.add(t.tag); else st.picked.delete(t.tag); draw(); } });
+      const b = el("input", { type: "checkbox", checked: on, "aria-label": `Select ${t.tag}`, "data-fk": "t:" + t.tag });
+      b.onclick = (e) => pick(t.tag, b.checked, e.shiftKey);
       const bar = el("span", { className: "sbar" }, el("span", { className: "sfill" + (stale ? " old" : "") }));
       bar.firstChild.style.width = Math.round((100 * (t.frees / sum)) / top) + "%";
       bar.title = `${((100 * t.frees) / sum).toFixed(1)}% of what this repository's tags free`;
-      return el("tr", { className: on ? "pickable on" : "" }, el("td", {}, b), el("td", {}, el("a", { href: `#/repo/${n.path}:${t.tag}`, textContent: t.tag })),
+      return el("tr", { className: on ? "pickable on" : "" }, el("td", { className: "pick" }, b), el("td", {}, el("a", { href: `#/repo/${n.path}:${t.tag}`, textContent: t.tag })),
         el("td", { className: "num", textContent: t.shares ? `0 B, shares ${t.shares}` : size(t.frees) }), el("td", { className: "mut num", textContent: size(t.size) }), el("td", {}, bar),
         usedCell(t.used), el("td", { className: "mut nw", title: t.pushed ? new Date(t.pushed * 1000).toLocaleString() : "", textContent: t.pushed ? ago(t.pushed) : "" }));
     };
@@ -1746,6 +1770,33 @@ function repoStorage(n) {
   paintRows();
   return [cards, el("div", { className: "bar" }, el("label", { className: "mut" }, "Select ", choose), el("span", { className: "mut", textContent: `Sorted by ${st.sort.key === "used" ? `last ${word}, oldest first` : st.sort.key}.`
     + (gone ? ` ${plural(gone, "tag")} deleted since the scan.` : "") + (u?.updated ? ` Scanned ${ago(u.updated)}.` : "") })), holder, sel];
+}
+
+// The Storage tab of a folder: the same disk map and table as the Storage view, scoped to this folder, so browsing a folder
+// answers "what does this hold" without leaving the tree. Shared-layer detail and growth stay on the full Storage view.
+function folderStorage(n) {
+  const u = storage.data;
+  if (!u || !u.updated) return [el("p", { className: "mut", textContent: "No scan has covered this folder yet. The first one runs after the first full walk of the registry." })];
+  const node = nodeAt(u.tree, n.path);
+  if (!node || !(node.kids || []).length) return [el("p", { className: "mut", textContent: "Nothing under this folder has been scanned yet." })];
+  const nowSecs = Date.now() / 1000;
+  const holder = el("div");
+  const draw = () => keepFocus(holder, () => {
+    const press = (on) => String(on);
+    const toggleBtn = (view, text) => el("button", { type: "button", "data-fk": "v:" + view, "aria-pressed": press(storageUI.view === view), textContent: text, onclick: () => { storageUI.view = view; draw(); } });
+    const byBtn = (v, text, tip) => el("button", { type: "button", "data-fk": "b:" + v, title: tip, "aria-pressed": press(prefs.mapBy === v), textContent: text, onclick: () => { prefs.mapBy = v; savePrefs(); scheduleTree(); draw(); } });
+    const bar = el("div", { className: "bar" }, el("div", { role: "group", "aria-label": "View", className: "seg" }, toggleBtn("map", "Map"), toggleBtn("table", "Table")),
+      ...(storageUI.view === "map" ? [el("span", { className: "mut" }, "Size by ", el("div", { role: "group", "aria-label": "Size by", className: "seg" },
+        byBtn("total", "Total", "Every byte the block uses, shared layers included"), byBtn("frees", "Frees", "Only the bytes that deleting it frees")))] : []));
+    const content = storageUI.view === "map"
+      ? diskMap(u, node, nowSecs, () => { location.hash = "#/storage/" + n.path; }, () => { storageUI.view = "table"; draw(); }, prefs.mapBy)
+      : storageTable(u, node, draw);
+    const summary = el("p", { className: "mut" }, `${size(figureOf(node, prefs.mapBy))} ${prefs.mapBy === "total" ? "total" : "unique"} in ${plural(node.tags, "tag")} under ${n.path}. `,
+      el("a", { href: "#/storage/" + n.path, textContent: "Open in the Storage view" }), " for shared layers and growth.");
+    holder.replaceChildren(bar, summary, content);
+  });
+  draw();
+  return [holder];
 }
 
 // ---- Recycle bin: a delete keeps the manifest in the state file, so Restore can push it back ------------------------------------
@@ -1786,7 +1837,7 @@ async function binPane(seq) {
     try { await api("/api/bin/empty", {}); } catch (err) { banner(err.message, true); }
     void renderPane();
   };
-  showMain(el("h2", {}, el("span", { className: "ico" }, icon("box")), "Bin"),
+  showMain(el("h2", {}, el("span", { className: "ico" }, icon("trash")), "Bin"),
     el("p", { className: "mut", textContent: `A deleted tag stays here for ${plural(b.days, "day")}. Restore pushes the same manifest back to its tag, once every layer is still in the registry. `
       + "Layers are freed only by garbage collection, which does not know about the Bin: run it after emptying the Bin, or Restore fails for the images it freed. Delete forever and Empty only forget the entry." }),
     ...(write && b.entries.length ? [el("div", { className: "bar" }, el("button", { type: "button", className: "danger", textContent: "Empty bin", onclick: () => void empty() }))] : []),
