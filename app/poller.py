@@ -98,7 +98,11 @@ class State:
                 if e["type"] == "deleted":
                     del self.tags[e["ref"]]
                 else:
-                    self.tags[e["ref"]] = {"digest": e["digest"], "first": self.tags.get(e["ref"], {}).get("first", now), "changed": now}
+                    changed = now  # seen by a walk: the push, to within one walk
+                    if not self.baselined:  # already there when the UI started: only the tag link's file time says when, else 0 (unknown)
+                        seed = (seeds or {}).get(e["ref"])
+                        changed = min(seed[0], now) if seed and seed[1] == "storage" else 0
+                    self.tags[e["ref"]] = {"digest": e["digest"], "first": self.tags.get(e["ref"], {}).get("first", now), "changed": changed}
             if ev and self.baselined:  # until the first full pass finishes, everything looks new
                 for e in ev:
                     self.seq += 1
@@ -206,7 +210,7 @@ class State:
                     "persistent": bool(self.path), "lastChanged": last, "tags": len(self.tags)}
 
     def dump(self):
-        return json.dumps({"v": 1, "since": self.since, "baselined": self.baselined, "seq": self.seq,
+        return json.dumps({"v": 2, "since": self.since, "baselined": self.baselined, "seq": self.seq,
                            "tags": self.tags, "meta": self.meta, "usage": self.usage, "bin": self.bin, "binm": self.binm, "events": list(self.events)}, sort_keys=True, separators=(",", ":"))
 
     def save(self, force=False, wait=-1):
@@ -265,6 +269,10 @@ class State:
             if not well_formed(data):
                 raise ValueError("unexpected structure")
             self.tags, self.seq, self.baselined = data["tags"], data["seq"], data["baselined"]
+            if data.get("v", 1) < 2:  # before 0.3.10 a tag found by the first walk got the walk's time as its push time
+                for v in self.tags.values():
+                    if v["changed"] == v["first"]:
+                        v["changed"] = 0
             self.meta = data.get("meta", {})
             self.binm = data.get("binm", {}) if B.manifests_shape(data.get("binm", {})) else {}
             self.bin = [e for e in data.get("bin", []) if B.entry_shape(e, self.binm)]
@@ -459,9 +467,11 @@ class Poller(threading.Thread):
                         break
                     found = self.seed_time(ref, digest)
                     self.last_tick = time.monotonic()  # progress, so a long first walk is not mistaken for a stall
+                    log.debug("first walk %s: %s", ref, f"{found[1]} time {found[0]}" if found else "no time found")
                     if found:
                         seeds[ref] = found
         self.state.update(scanned, observed, gone, seeds)
+        log.debug("walk: %d repositories in the catalog, %d read (%d tags), %d skipped, %d waiting for a push", len(repos), len(scanned), len(observed), len(skipped), len(self.pending))
         if self.state.baselined:
             self.bodies.clear()
             self.created.clear()

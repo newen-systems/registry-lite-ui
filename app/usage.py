@@ -371,8 +371,8 @@ class Usage(threading.Thread):
                         data = f.read(R.MAX_BODY + 1)
                     if len(data) <= R.MAX_BODY:
                         return data
-                except OSError:
-                    pass
+                except OSError as e:
+                    log.debug("manifest %s not read from storage, asking the registry: %s", digest, e)
             return self.client.manifest(repo, digest)[0]
         return read
 
@@ -407,6 +407,9 @@ class Usage(threading.Thread):
         result.update({"updated": int(now), "mount": bool(self.mount), "disk": disk, "files": files, "tags": len(tags), "blobs": len({b for v, _ in cache.values() for b in v}),
                        "unread": {"count": len(unread), "first": unread[:5]}, "atime": recorded if ages else None, "stale": stale_summary(result, by_digest, now), "by_digest": by_digest,
                        "unreferenced": max(0, disk - sum(result["sizes"].values())) if disk is not None else None})
+        log.info("usage scan: %d tags, %d manifests read, %d unread, %d layer ages (%d atime), disk %s bytes in %s files",
+                 len(tags), len(by_digest) - sum(1 for b in by_digest.values() if not b), len(unread), len(ages),
+                 sum(1 for a in ages.values() if a[1] == "atime"), disk, files)
         with self.lock:
             self.latest = result
         if record:

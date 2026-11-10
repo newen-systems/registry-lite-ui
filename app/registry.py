@@ -417,6 +417,36 @@ def blob_pushed(mount, digest):
         return None
 
 
+def storage_probe(mount, limit=10000):
+    """Lines saying what the UI can read under the storage mount, for the log at start: each directory the features use, and
+    one tag link found by walking repositories/ (at most `limit` directories), since a tag link that cannot be read turns off
+    tag history and tag push times while the blob-based figures keep working."""
+    v2, out = os.path.join(mount, STORAGE), []
+    for name, path in (("mount", mount), ("storage root", v2), ("blobs", os.path.join(v2, "blobs")), ("repositories", os.path.join(v2, "repositories"))):
+        try:
+            out.append(f"{name} {path}: readable, {len(os.listdir(path))} entries")
+        except OSError as e:
+            out.append(f"{name} {path}: NOT READABLE ({e.strerror or e})")
+            if name != "mount" and os.path.isdir(os.path.join(mount, "blobs")):
+                out.append(f"the mount holds blobs/ itself: mount the directory that contains {STORAGE}, not {STORAGE}")
+            return out
+    seen = 0
+    for here, dirs, names in os.walk(os.path.join(v2, "repositories"), onerror=lambda e: out.append(f"cannot list {e.filename}: {e.strerror or e}")):
+        seen += 1
+        if "link" in names and os.sep + "tags" + os.sep in here:
+            try:
+                os.stat(os.path.join(here, "link"))
+                out.append(f"tag link {os.path.join(here, 'link')}: readable, tag history and push times on")
+            except OSError as e:
+                out.append(f"tag link {os.path.join(here, 'link')}: NOT READABLE ({e.strerror or e})")
+            return out
+        if seen >= limit:
+            out.append(f"no tag link found in the first {limit} directories of repositories/")
+            return out
+    out.append("no tag link found under repositories/: tag history and push times are off")
+    return out
+
+
 def tag_history(mount, repo, tag):
     """Every digest a tag has pointed at, from the tag's index in storage, newest first: when it took that digest (the mtime
     of its link) and whether the manifest is still there to pull by digest. [] without the storage."""
@@ -434,10 +464,12 @@ def tag_history(mount, repo, tag):
                     continue
                 try:
                     when = int(os.stat(os.path.join(index, alg, hexed, "link")).st_mtime)
-                except OSError:
+                except OSError as e:
+                    log.debug("tag history %s:%s: cannot stat a link: %s", repo, tag, e)
                     continue
                 out.append({"digest": digest, "time": when, "present": os.path.exists(os.path.join(base, "revisions", alg, hexed, "link"))})
-    except OSError:
+    except OSError as e:
+        log.debug("tag history %s:%s: cannot read the tag index: %s", repo, tag, e)
         return []
     return sorted(out, key=lambda h: (-h["time"], h["digest"]))[:MAX_HISTORY]
 

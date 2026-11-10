@@ -871,7 +871,7 @@ const TAG_COLUMNS = [
   { key: "size", label: "Size", tip: "Sorts loaded rows. A multi-arch index has no size of its own.", val: sizeOf, cmp: numCmp },
   { key: "platforms", label: "Platforms", tip: "Sorts loaded rows", val: platformsOf, cmp: collator.compare },
   { key: "created", label: "Created", tip: "Sorts loaded rows. When the image was built, from its config. A multi-arch index has none.", val: createdOf, cmp: numCmp },
-  { key: "changed", label: "Pushed", tip: "When this UI saw the tag take its digest: the push, to within one walk of the registry", val: (t) => t.changed || null, cmp: numCmp },
+  { key: "changed", label: "Pushed", tip: "When this UI saw the tag take its digest: the push, to within one walk of the registry. A tag already there when the UI started has its storage file time, or is blank when that is not known.", val: (t) => t.changed || null, cmp: numCmp },
 ];
 const USED_TIP = "When the newest blob of the tag was last used, from the registry storage: the access time where the host records it, else the modification time. Sorts oldest first. As of the last usage scan.";
 const USED_COLUMN = { key: "used", label: "Last used", tip: USED_TIP, val: (t) => t.parent.ages?.[t.tag]?.[0] ?? null, cmp: numCmp };
