@@ -1571,6 +1571,15 @@ class Storage(unittest.TestCase):
         self.assertIsNone(R.blob_pushed(None, D("2")))  # storage not mounted
         self.assertIsNone(R.blob_pushed(self.root, "sha256:../../etc"))
 
+    def test_storage_probe(self):
+        lines = R.storage_probe(self.root)
+        self.assertEqual(len(lines), 5)
+        self.assertIn("tag link", lines[-1])
+        self.assertIn(": readable, tag history", lines[-1])
+        lines = R.storage_probe(os.path.join(self.root, R.STORAGE))  # mounted one level too deep
+        self.assertIn("NOT READABLE", lines[1])
+        self.assertIn("not docker/registry/v2", lines[2])
+
     def test_tag_history_newest_first(self):
         self.assertEqual(R.tag_history(self.root, "a/app", "latest"), [
             {"digest": D("b"), "time": 3000, "present": True}, {"digest": D("c"), "time": 2000, "present": False}])
@@ -1794,7 +1803,7 @@ class UsageHistory(unittest.TestCase):
         doc = json.load(open(path))
         doc.pop("usage")
         json.dump(doc, open(path, "w"))
-        self.assertEqual(P.State(path, clock=Clock()).tags, {"a:1": {"digest": "d1", "first": 1000.0, "changed": 1000.0}})
+        self.assertEqual(P.State(path, clock=Clock()).tags, {"a:1": {"digest": "d1", "first": 1000.0, "changed": 0}})  # found before the baseline: push time unknown
         doc["usage"] = [{"t": 1, "total": 2, "repos": {}}, "junk", {"t": "x"}]
         json.dump(doc, open(path, "w"))
         self.assertEqual(len(P.State(path, clock=Clock()).usage_history()), 1)
@@ -2118,6 +2127,7 @@ class SeedRecent(unittest.TestCase):
         self.assertEqual([e["t"] for e in evs], [1790812800.123456, 1790985600.0])
         self.assertTrue(st.baselined)
         self.assertEqual([e["seq"] for e in evs], [1, 2])  # newest has the highest seq
+        self.assertEqual({k: v["changed"] for k, v in st.tags.items()}, {"a:1": 0, "a:2": 0, "a:3": 0})  # a build time is not a push time
         n = reg.reads
         p.cycle()
         self.assertEqual(len(st.events), 2)  # nothing new on the next walk
@@ -2137,6 +2147,7 @@ class SeedRecent(unittest.TestCase):
         p.cycle()
         (e,) = st.events
         self.assertEqual((e["t"], e["src"]), (1.9e9, "storage"))
+        self.assertEqual(st.tags["a:1"]["changed"], 1.9e9)  # the tag link's time is the push time
         self.assertEqual(p.created, {})  # no config was read for it
 
     def test_a_restart_with_a_state_file_adds_no_events(self):
@@ -2165,6 +2176,18 @@ class SeedRecent(unittest.TestCase):
         P.Poller(reg, st).cycle()
         (e,) = st.events
         self.assertNotIn("src", e)  # seen live, with the time it was seen
+        self.assertEqual(st.tags["a:1"]["changed"], e["t"])
+
+    def test_an_old_state_file_forgets_first_walk_push_times(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d)
+        path = os.path.join(d, "state.json")
+        doc = {"v": 1, "since": 1, "baselined": True, "seq": 0, "events": [],
+               "tags": {"a:1": {"digest": "d1", "first": 5, "changed": 5}, "a:2": {"digest": "d2", "first": 5, "changed": 9}}}
+        with open(path, "w") as f:
+            json.dump(doc, f)
+        tags = P.State(path, clock=Late()).tags
+        self.assertEqual((tags["a:1"]["changed"], tags["a:2"]["changed"]), (0, 9))  # the first walk's time is dropped, a seen change kept
 
 
 class SeedRecentLater(unittest.TestCase):

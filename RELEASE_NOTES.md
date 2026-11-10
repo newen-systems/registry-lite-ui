@@ -4,6 +4,17 @@ registry-lite-ui is a web UI for a plain `registry:2` that browses, copies, move
 
 `podman-compose up -d` with `compose.yml` (registry and UI), or `podman-compose -f compose.ui.yml up -d` with `REGISTRY_URL` set for a registry that already runs. `docker compose` works the same way. Pin `UI_IMAGE` to a version or a digest in your `.env`.
 
+## Changes in 0.3.10
+
+### New Features
+
+- At start, with `UI_REGISTRY_STORAGE_MOUNT` set, the log has `storage probe:` lines: whether the mount, the storage root, `blobs/` and `repositories/` can be read, and whether one tag link can be. A mount one level too deep says which directory to mount instead. Each storage scan logs a `usage scan:` summary line
+- `LOG_LEVEL=debug` logs each registry walk, the push time each tag found by the first walk got and where from, each tag history that cannot be read with the error, and each manifest read over the API because the storage copy could not be read
+
+### Bug Fixes
+
+- A tag already in the registry when the UI first walks it no longer shows the walk's time as its push time. It shows its tag link's file time from the storage mount, or nothing when that cannot be read. The Storage tab of a repository no longer falls back to the walk's time either. A state file from an earlier release drops the push time of every tag whose push time equals its first-seen time, so a tag first pushed while the UI ran shows blank until it is pushed again
+
 ## Changes in 0.3.9
 
 ### New Features

@@ -328,7 +328,7 @@ def routes(cfg):
                 if P.repo_of(ref) == repo:
                     tag = ref.rpartition(":")[2]
                     links = [h["time"] for h in R.tag_history(cfg.storage_mount, repo, tag) if h["digest"] == v["digest"]] if cfg.storage_mount else []
-                    pushed[tag] = links[0] if links else int(v["changed"])
+                    pushed[tag] = links[0] if links else (int(v["changed"]) or None)  # 0: not known
             pushed_cache[repo] = pushed
         return {"updated": snap["updated"], **U.repo_detail(snap, snap["by_digest"], repo, pushed_cache[repo])}
 
@@ -628,6 +628,9 @@ def main(env):
     if cert:
         # handshake in the worker thread, so a stalled client cannot block accept()
         httpd.socket = server_context(cert, key).wrap_socket(httpd.socket, server_side=True, do_handshake_on_connect=False)
+    if cfg.storage_mount:
+        for line in R.storage_probe(cfg.storage_mount):
+            log.info("storage probe: %s", line)
     cfg.poller = P.Poller(cfg.client, cfg.state, cfg.interval, cfg.max_tags, cfg.burst, cfg.burst_max, cfg.poll_min, cfg.storage_mount)
     cfg.poller.start()
     if cfg.usage_interval:
