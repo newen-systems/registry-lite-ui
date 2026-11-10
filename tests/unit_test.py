@@ -1542,10 +1542,6 @@ class Stream(unittest.TestCase):
         self.assertEqual([p for m, p in c.calls if m == "DELETE"][0], f"/v2/s/app/manifests/{D('a')}")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class Storage(unittest.TestCase):
     """Layer push times and tag history, read from a registry:2 filesystem storage tree mounted read-only."""
     def setUp(self):
@@ -2400,3 +2396,7 @@ class UsageSubrepos(unittest.TestCase):
         (strip,) = sub(node_at(r["tree"], "r"), "shared")
         self.assertEqual(strip["sharers"], [])
         self.assertTrue(strip["one_repo"])
+
+
+if __name__ == "__main__":
+    unittest.main()
