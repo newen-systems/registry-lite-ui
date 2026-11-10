@@ -4,6 +4,17 @@ registry-lite-ui is a web UI for a plain `registry:2` that browses, copies, move
 
 `podman-compose up -d` with `compose.yml` (registry and UI), or `podman-compose -f compose.ui.yml up -d` with `REGISTRY_URL` set for a registry that already runs. `docker compose` works the same way. Pin `UI_IMAGE` to a version or a digest in your `.env`.
 
+## Changes in 0.3.11
+
+### New Features
+
+- A folder in the tree now has a Storage tab, the same disk map and table as the Storage view scoped to that folder, so browsing a folder shows what it holds and lets you drill into its repositories without leaving the tree. Shared-layer detail and the growth history stay on the full Storage view, linked from the tab
+
+### Bug Fixes
+
+- The checkboxes in a repository's Storage tab now match the app theme and accept shift-click to select or clear a range of tags, the same as the Tags tab
+- The Bin heading showed a plain square where its icon should be. It now has a bin icon
+
 ## Changes in 0.3.10
 
 ### New Features
