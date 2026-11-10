@@ -148,6 +148,7 @@ Add each with `-f`, after `compose.yml` (or after `compose.ui.yml` for a registr
 ## Preconditions
 
 - Files the containers read (keys, certificates, `secrets/*`, a host `/data/registry`) belong to uid 65534: `chown -R 65534:65534 <dirs>`, or `podman unshare chown` for rootless podman. Mount shared directories with `:z` under SELinux.
+- **`Permission denied` (errno 13) on `/var/lib/registry`.** The registry runs as uid 65534 (`compose.yml` sets `user: "65534:65534"`), so its storage must be owned by, or readable to, that uid. `registry-init` does this once for the named `registry-data` volume. A host bind mount (for example `/data/registry:/var/lib/registry`) is not chowned for you: run `chown -R 65534:65534 /data/registry` (or `podman unshare chown` when rootless) before starting. The UI, which also reads that storage read-only, reports the same problem in its `storage probe:` log lines at start (`NOT READABLE`, followed by `errno 13 ... chown -R <uid>:<uid> ...`), so those lines name the directory and the fix.
 - The overrides add to the service named `registry-lite-ui`. Renaming that service leaves the override as a second service without an image, and compose refuses to start (`has neither an image nor a build context`). To name the container, keep the service and set `container_name` in your own override file.
 - The OIDC issuer sends `email` with `email_verified` true, and a `groups` claim when `OIDC_ALLOWED_GROUPS` is set.
 - The PyPI token's user can read the group or project, or the index is public and the token file is empty.

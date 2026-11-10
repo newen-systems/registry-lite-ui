@@ -1580,6 +1580,25 @@ class Storage(unittest.TestCase):
         self.assertIn("NOT READABLE", lines[1])
         self.assertIn("not docker/registry/v2", lines[2])
 
+    def test_perm_hint_names_the_uid_and_fix(self):
+        import errno
+        hint = R.perm_hint(OSError(errno.EACCES, "Permission denied"))
+        self.assertIn("errno 13", hint)
+        self.assertIn(str(os.getuid()), hint)  # the UID to chown to
+        self.assertIn("chown", hint)
+        self.assertIsNone(R.perm_hint(OSError(errno.ENOENT, "No such file")))  # only permission errors get the hint
+
+    @unittest.skipIf(os.getuid() == 0, "root bypasses the permission bits")
+    def test_storage_probe_reports_errno_13(self):
+        deep = os.path.join(self.root, R.STORAGE, "repositories")
+        mode = os.stat(deep).st_mode
+        os.chmod(deep, 0)
+        try:
+            lines = R.storage_probe(self.root)
+        finally:
+            os.chmod(deep, mode)
+        self.assertTrue(any("errno 13" in line for line in lines), lines)
+
     def test_tag_history_newest_first(self):
         self.assertEqual(R.tag_history(self.root, "a/app", "latest"), [
             {"digest": D("b"), "time": 3000, "present": True}, {"digest": D("c"), "time": 2000, "present": False}])
