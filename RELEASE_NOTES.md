@@ -4,6 +4,12 @@ registry-lite-ui is a web UI for a plain `registry:2` that browses, copies, move
 
 `podman-compose up -d` with `compose.yml` (registry and UI), or `podman-compose -f compose.ui.yml up -d` with `REGISTRY_URL` set for a registry that already runs. `docker compose` works the same way. Pin `UI_IMAGE` to a version or a digest in your `.env`.
 
+## Changes in 0.3.12
+
+### Bug Fixes
+
+- Copy and Move no longer let a copy or move through onto an existing destination tag with no warning. When the destination repository exists but its tag list has not loaded yet, the dialog showed nothing and kept the button enabled, so a fast click could overwrite a tag silently. It now shows "Checking the destination..." and keeps the button disabled until the tags load, then warns if the tag is taken
+
 ## Changes in 0.3.11
 
 ### New Features
