@@ -1542,10 +1542,6 @@ class Stream(unittest.TestCase):
         self.assertEqual([p for m, p in c.calls if m == "DELETE"][0], f"/v2/s/app/manifests/{D('a')}")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class Storage(unittest.TestCase):
     """Layer push times and tag history, read from a registry:2 filesystem storage tree mounted read-only."""
     def setUp(self):
@@ -1579,6 +1575,25 @@ class Storage(unittest.TestCase):
         lines = R.storage_probe(os.path.join(self.root, R.STORAGE))  # mounted one level too deep
         self.assertIn("NOT READABLE", lines[1])
         self.assertIn("not docker/registry/v2", lines[2])
+
+    def test_perm_hint_names_the_uid_and_fix(self):
+        import errno
+        hint = R.perm_hint(OSError(errno.EACCES, "Permission denied"))
+        self.assertIn("errno 13", hint)
+        self.assertIn(str(os.getuid()), hint)  # the UID to chown to
+        self.assertIn("chown", hint)
+        self.assertIsNone(R.perm_hint(OSError(errno.ENOENT, "No such file")))  # only permission errors get the hint
+
+    @unittest.skipIf(os.getuid() == 0, "root bypasses the permission bits")
+    def test_storage_probe_reports_errno_13(self):
+        deep = os.path.join(self.root, R.STORAGE, "repositories")
+        mode = os.stat(deep).st_mode
+        os.chmod(deep, 0)
+        try:
+            lines = R.storage_probe(self.root)
+        finally:
+            os.chmod(deep, mode)
+        self.assertTrue(any("errno 13" in line for line in lines), lines)
 
     def test_tag_history_newest_first(self):
         self.assertEqual(R.tag_history(self.root, "a/app", "latest"), [
@@ -2381,3 +2396,7 @@ class UsageSubrepos(unittest.TestCase):
         (strip,) = sub(node_at(r["tree"], "r"), "shared")
         self.assertEqual(strip["sharers"], [])
         self.assertTrue(strip["one_repo"])
+
+
+if __name__ == "__main__":
+    unittest.main()

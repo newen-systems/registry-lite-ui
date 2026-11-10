@@ -1,5 +1,6 @@
 """Registry client and image operations. Talks only to REGISTRY_URL, over its HTTP API."""
 import base64
+import errno
 import hashlib
 import json
 import logging
@@ -417,6 +418,16 @@ def blob_pushed(mount, digest):
         return None
 
 
+def perm_hint(e):
+    """When an OSError is a permission error (errno 13), say it is an ownership problem and name the UID this process runs as,
+    so the probe log points straight at the fix instead of a bare "Permission denied"."""
+    if e.errno != errno.EACCES:
+        return None
+    uid = os.getuid()
+    return (f"errno 13 (Permission denied): not readable by the UID this process runs as ({uid}). The registry's storage must be "
+            f"owned by, or readable to, that UID: chown -R {uid}:{uid} the host directory or volume the registry stores to.")
+
+
 def storage_probe(mount, limit=10000):
     """Lines saying what the UI can read under the storage mount, for the log at start: each directory the features use, and
     one tag link found by walking repositories/ (at most `limit` directories), since a tag link that cannot be read turns off
@@ -427,7 +438,10 @@ def storage_probe(mount, limit=10000):
             out.append(f"{name} {path}: readable, {len(os.listdir(path))} entries")
         except OSError as e:
             out.append(f"{name} {path}: NOT READABLE ({e.strerror or e})")
-            if name != "mount" and os.path.isdir(os.path.join(mount, "blobs")):
+            hint = perm_hint(e)
+            if hint:
+                out.append(hint)
+            elif name != "mount" and os.path.isdir(os.path.join(mount, "blobs")):
                 out.append(f"the mount holds blobs/ itself: mount the directory that contains {STORAGE}, not {STORAGE}")
             return out
     seen = 0
@@ -439,6 +453,9 @@ def storage_probe(mount, limit=10000):
                 out.append(f"tag link {os.path.join(here, 'link')}: readable, tag history and push times on")
             except OSError as e:
                 out.append(f"tag link {os.path.join(here, 'link')}: NOT READABLE ({e.strerror or e})")
+                hint = perm_hint(e)
+                if hint:
+                    out.append(hint)
             return out
         if seen >= limit:
             out.append(f"no tag link found in the first {limit} directories of repositories/")

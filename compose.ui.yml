@@ -4,10 +4,14 @@
 #   UI_TLS_CERT      path inside the container of the UI certificate, for example /certs/tls.crt
 #   UI_TLS_KEY       path inside the container of a key copy readable by uid 65534, for example /keys/ui.key
 #   CERTS_DIR, KEYS_DIR  host directories mounted at /certs and /keys (default /data/certs and /data/keys)
-# `z` relabels with a shared SELinux label, so another service mounting the same directory keeps access.
+# `z` (lowercase) relabels with a shared SELinux label, so another service mounting the same directory keeps access.
+# Use `z`, never `Z` (uppercase, private per-container): a `Z` mount lets only one container read the storage, so
+# the registry keeps it and this UI gets errno 13. Mount the registry's storage `z` here and `z` on the registry too.
 # Layer push times and tag history read the registry's filesystem storage. When this host has it, add the volume
 #   - /data/registry:/registry:ro,z   (the directory or volume the registry mounts at /var/lib/registry)
-# and set UI_REGISTRY_STORAGE_MOUNT=/registry. Without it those columns are left out.
+# and set UI_REGISTRY_STORAGE_MOUNT=/registry. Without it those columns are left out. If the share is still denied
+# after the uid and `z` are right, check for an SELinux or fapolicyd denial: `ausearch -m AVC -ts recent`, and add
+# the mount to fapolicyd's allow rules if that daemon blocks the reader the registry's own policy allows.
 # Give the directories to the UI uid, which the registry in compose.yml shares: chown -R 65534:65534 /data/certs /data/keys
 services:
   registry-lite-ui:

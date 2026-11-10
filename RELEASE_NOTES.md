@@ -4,6 +4,13 @@ registry-lite-ui is a web UI for a plain `registry:2` that browses, copies, move
 
 `podman-compose up -d` with `compose.yml` (registry and UI), or `podman-compose -f compose.ui.yml up -d` with `REGISTRY_URL` set for a registry that already runs. `docker compose` works the same way. Pin `UI_IMAGE` to a version or a digest in your `.env`.
 
+## Changes in 0.3.13
+
+### New Features
+
+- When a directory under `UI_REGISTRY_STORAGE_MOUNT` cannot be read because of a permission error, the `storage probe:` log at start now adds an `errno 13 (Permission denied)` line that names the UID the UI runs as and the `chown` that fixes it, instead of a bare `NOT READABLE`. The README explains the same `Permission denied` on the registry's own `/var/lib/registry`: the registry runs as uid 65534, so its storage must be owned by or readable to that uid, which `registry-init` does for the named volume but not for a host bind mount
+- The README and the compose files now explain sharing the registry's storage between the registry and the UI on an SELinux host (RHEL, Fedora). A host bind mount tagged `:Z` (private) lets only the registry read it and gives the UI `errno 13`; both services must mount the storage `:z` (shared), the UI read-only (`:ro,z`). `compose.yml` and `compose.ui.yml` carry the shared-mount example, and the troubleshooting section covers the fapolicyd case where the daemon blocks the reader the registry's policy allows
+
 ## Changes in 0.3.12
 
 ### Bug Fixes
