@@ -1,12 +1,16 @@
 # registry:2 is published directly, exactly as before. The UI is a separate service that calls it.
 # Both run as uid and gid 65534, so one chown of the shared host files (README, Shared ownership) suits both.
 # The image itself runs as root; `user:` drops that, and registry-init gives the data volume to 65534.
+# The named `registry-data` volume is shared between the registry and the UI. On SELinux it already carries a
+# shared label, so both read it with no suffix. To store on a host directory instead, bind-mount the same path
+# into both services with `:z` (lowercase, shared), never `:Z` (uppercase, private per-container): a `:Z` mount
+# relabels the storage so only one container can read it and the UI gets errno 13. See README, "Permission denied".
 services:
   registry-init:
     image: registry:2@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
     user: "0:0"
     entrypoint: ["chown", "-R", "65534:65534", "/var/lib/registry"]
-    volumes: [registry-data:/var/lib/registry]
+    volumes: [registry-data:/var/lib/registry]  # host dir instead: - /data/registry:/var/lib/registry:z
     cap_drop: [ALL]
     cap_add: [CHOWN, DAC_OVERRIDE]
     security_opt: ["no-new-privileges:true"]
@@ -21,7 +25,7 @@ services:
     ports: ["${REGISTRY_PORT:-5000}:5000"]
     environment:
       REGISTRY_STORAGE_DELETE_ENABLED: "true"
-    volumes: [registry-data:/var/lib/registry]
+    volumes: [registry-data:/var/lib/registry]  # host dir instead: - /data/registry:/var/lib/registry:z
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     restart: unless-stopped
@@ -50,7 +54,7 @@ services:
       UI_BIN_DAYS: "${UI_BIN_DAYS:-7}"
       UI_STATE_DIR: /state
       UI_MAX_EVENTS: "${UI_MAX_EVENTS:-1000}"
-    volumes: [ui-state:/state, registry-data:/registry:ro]
+    volumes: [ui-state:/state, registry-data:/registry:ro]  # host dir instead: - /data/registry:/registry:ro,z (same path the registry mounts)
     mem_limit: 128m
     pids_limit: 128
     cpus: 0.5
