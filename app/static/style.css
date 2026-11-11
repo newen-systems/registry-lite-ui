@@ -108,7 +108,7 @@ p { margin:var(--s2) 0; max-width:72ch; }
 .ico { display:inline-flex; vertical-align:middle; } .ico .i { margin-right:var(--s2); }
 .bar { margin:0 0 var(--s4); display:flex; flex-wrap:wrap; gap:var(--s2); }
 .hint { color:var(--amber); font-size:13px; }
-.badge { font-size:12px; font-weight:600; } .new { color:var(--ok); } .retagged { color:var(--amber); } .deleted { color:var(--bad); }
+.badge { font-size:12px; font-weight:600; } .new { color:var(--ok); } .retagged { color:var(--amber); } .deleted { color:var(--bad); } .restored { color:var(--acc); }
 
 table { border-collapse:collapse; width:100%; }
 th, td { text-align:left; padding:var(--s2) var(--s3); border-bottom:1px solid var(--line); vertical-align:middle; }

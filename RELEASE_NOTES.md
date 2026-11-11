@@ -11,10 +11,13 @@ registry-lite-ui is a web UI for a plain `registry:2` that browses, copies, move
 - A bulk delete is no longer capped at 100 tags. The Tags view and a repository's Storage tab send the selection in calls of at most 100 (the server's cap), indexes first and every tag of one digest in the same call, and show the progress ("call 1 of 2")
 - The Storage view keeps your Map or Table choice across a page reload, in the browser's saved preferences, for the Storage view and a folder's Storage tab alike
 - In the Storage table, a row's name is the one way into it: a folder name opens that folder in the view you are using, a repository name opens its Storage tab, where its tags are picked. The "Show in map" and "Select tags" links are gone: "Select tags" went to the same page as the repository name, and "Show in map" opened the folder but stayed on the table
+- The Bin has a checkbox per entry, a select-all box and shift-click range select, styled as in the Tags view and the Storage tab, with Restore selected and Delete forever for the selection. Each entry is one call, a failure is named and the rest still go, and the banner counts progress ("Restoring 2 of 5...")
+- The Bin page explains what it holds: the tag and manifest are already gone from the registry, the layers stay on disk until garbage collection runs. To free the space, empty the Bin (or let entries expire) and then run garbage collection; garbage collection does not know about the Bin, so running it while entries are there frees their layers too and Restore then fails for them. Empty bin's confirmation says it frees nothing by itself
 - Deleting every tag in a repository at once (Select all, or a quick select that picks them all) asks you to type the repository name before Delete is enabled
 
 ### Bug Fixes
 
+- A tag restored from the Bin goes back to its place in the tree and in the Tags view, and Recent changes shows it as "restored" instead of "new". The Bin now keeps the tag's own change and first-seen times, and the poller records the tag Restore put back with them, instead of as a push made now. A restore does not raise a push notification. Entries moved to the Bin before this release have no saved times and are still restored at the top
 - Move to bin (or Delete) from a repository's Storage tab now shows the results dialog and updates the Bin count, as the Tags view does. It used to fail after the delete went through, on the Tags view's selection, which that tab never opens, so it showed nothing and left the selection and the Bin count stale
 - A delete, copy or move shows what it is doing (for example "Moving 3 tags to the Bin...") until it finishes or fails, instead of nothing. The banner is now a live region, so screen readers announce it
 

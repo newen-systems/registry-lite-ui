@@ -1042,7 +1042,7 @@ function tagsList(n) {
 // Bulk delete: a checkbox per row, one for every row shown, and a bar with the count and Delete selected. A shift-click selects
 // or clears every row shown from the last row clicked to this one. The picks are kept per list while the page is open, and one that is gone drops out.
 // o: {id (the list's view state), key(item), keep(key) (whether it still exists), noun, cost(keys) (what the batch cap counts, else the picks),
-// costNoun, onDelete(keys)}
+// costNoun, onDelete(keys), nouns (the plural, when not noun + "s"), deleteText, hint, more: [[text, fn(keys)]] (other buttons for the selection)}
 function pickBar(o) {
   const st = stateOf(o.id);
   st.picked ??= new Set();
@@ -1052,7 +1052,8 @@ function pickBar(o) {
   let vis = [];
   const all = el("input", { type: "checkbox", "aria-label": `Select every ${o.noun} shown` });
   const count = el("span", { className: "mut", role: "status" });
-  const go = el("button", { type: "button", className: "danger", textContent: "Delete selected", onclick: () => void o.onDelete(new Set(st.picked)) });
+  const go = el("button", { type: "button", className: "danger", textContent: o.deleteText || "Delete selected", onclick: () => void o.onDelete(new Set(st.picked)) });
+  const more = (o.more || []).map(([text, fn]) => el("button", { type: "button", textContent: text, onclick: () => void fn(new Set(st.picked)) }));
   const clear = el("button", { type: "button", className: "linkbtn", textContent: "Clear selection", onclick: () => { st.picked.clear(); update(); all.focus(); } });
   function update() {
     const on = vis.filter((i) => st.picked.has(o.key(i))).length;
@@ -1060,9 +1061,10 @@ function pickBar(o) {
     all.indeterminate = on > 0 && on < vis.length;
     for (const [k, b] of boxes) { b.checked = st.picked.has(k); b.closest("tr")?.classList.toggle("on", b.checked); }
     const k = st.picked.size, cost = o.cost ? o.cost(st.picked) : k;
-    count.textContent = k ? `${plural(k, o.noun)} selected` + (cost !== k ? `, ${plural(cost, o.costNoun)}` : "") + (cost > max ? `, at most ${max} at once` : "")
-      : `Select ${o.noun}s to delete several at once. Shift-click selects a range.`;
+    count.textContent = k ? `${plural(k, o.noun, o.nouns)} selected` + (cost !== k ? `, ${plural(cost, o.costNoun)}` : "") + (cost > max ? `, at most ${max} at once` : "")
+      : o.hint || `Select ${o.noun}s to delete several at once. Shift-click selects a range.`;
     go.disabled = !k || cost > max;
+    for (const b of more) b.disabled = !k;
     clear.hidden = !k;
   }
   const set = (k, on) => { if (on) st.picked.add(k); else st.picked.delete(k); };
@@ -1088,7 +1090,7 @@ function pickBar(o) {
       pick(item, !st.picked.has(k), e.shiftKey);
     });
   };
-  return { bar: el("div", { className: "bar bulk" }, count, go, clear), head: el("th", { className: "pick" }, all), row, shown: (v) => { vis = v; update(); } };
+  return { bar: el("div", { className: "bar bulk" }, count, ...more, go, clear), head: el("th", { className: "pick" }, all), row, shown: (v) => { vis = v; update(); } };
 }
 
 function childrenList(n) {
@@ -1831,20 +1833,51 @@ async function binPane(seq) {
     if (!(await ask("Delete forever", [`Remove ${e.repo}:${e.tag} from the Bin? It can no longer be restored. Disk space is freed by garbage collection.`], [], true))) return;
     if (await act(e, "/api/bin/delete")) void renderPane();
   };
-  const row = (e) => el("tr", {}, el("td", {}, code(`${e.repo}:${e.tag}`)), el("td", { className: "nw" }, code(short(e.digest))), el("td", { textContent: size(e.size) }),
-    el("td", { className: "mut", title: new Date(e.t * 1000).toLocaleString(), textContent: ago(e.t) }), el("td", { className: "mut", textContent: left(e) }),
-    ...(write ? [el("td", { className: "nw" }, el("button", { type: "button", textContent: "Restore", onclick: () => void restore(e) }), " ",
-      el("button", { type: "button", className: "danger", textContent: "Delete forever", onclick: () => void forget(e) }))] : []));
+  // Restore or Delete forever for each picked entry, one call each, in list order. A failure is reported and the rest still go.
+  const each = async (ids, path, verb) => {
+    const list = b.entries.filter((e) => ids.has(e.id)), failed = [];
+    for (const [i, e] of list.entries()) {
+      banner(`${verb} ${i + 1} of ${list.length}...`);
+      try { await api(path, { id: e.id }); } catch (err) { failed.push(`${e.repo}:${e.tag} (${err.message})`); }
+    }
+    const done = list.length - failed.length;
+    banner(failed.length ? `${done} of ${list.length} done. Failed: ${failed.join("; ")}` : "", failed.length > 0);
+    return list;
+  };
+  const restoreMany = async (ids) => {
+    const list = await each(ids, "/api/bin/restore", "Restoring");
+    await touch(...new Set(list.map((e) => e.repo))).catch(() => { /* the next sync shows it */ });
+    void renderPane();
+  };
+  const forgetMany = async (ids) => {
+    if (!(await ask("Delete forever", [`Remove ${plural(ids.size, "entry", "entries")} from the Bin? ${ids.size === 1 ? "It" : "They"} can no longer be restored. Disk space is freed by garbage collection.`], [], true))) return;
+    await each(ids, "/api/bin/delete", "Deleting");
+    void renderPane();
+  };
+  // Checkboxes and shift-click ranges as in the Tags view and the Storage tab.
+  const pick = write ? pickBar({ id: "bin", key: (e) => e.id, keep: (id) => b.entries.some((e) => e.id === id), noun: "entry", nouns: "entries", deleteText: "Delete forever",
+    hint: "Select entries to restore or delete several at once. Shift-click selects a range.", onDelete: forgetMany, max: Infinity, more: [["Restore selected", restoreMany]] }) : null;
+  const row = (e) => {
+    const tr = el("tr", {}, el("td", {}, code(`${e.repo}:${e.tag}`)), el("td", { className: "nw" }, code(short(e.digest))), el("td", { textContent: size(e.size) }),
+      el("td", { className: "mut", title: new Date(e.t * 1000).toLocaleString(), textContent: ago(e.t) }), el("td", { className: "mut", textContent: left(e) }),
+      ...(write ? [el("td", { className: "nw" }, el("button", { type: "button", textContent: "Restore", onclick: () => void restore(e) }), " ",
+        el("button", { type: "button", className: "danger", textContent: "Delete forever", onclick: () => void forget(e) }))] : []));
+    pick?.row(tr, e);
+    return tr;
+  };
   const empty = async () => {
-    if (!(await ask("Empty the Bin", [`Remove all ${plural(b.entries.length, "entry", "entries")} from the Bin? None of them can be restored afterwards.`], [], true))) return;
+    if (!(await ask("Empty the Bin", [`Remove all ${plural(b.entries.length, "entry", "entries")} from the Bin? None of them can be restored afterwards. This frees no disk space by itself: run garbage collection next.`], [], true))) return;
     try { await api("/api/bin/empty", {}); } catch (err) { banner(err.message, true); }
     void renderPane();
   };
+  const rows = b.entries.map(row);
+  pick?.shown(b.entries);
   showMain(el("h2", {}, el("span", { className: "ico" }, icon("trash")), "Bin"),
-    el("p", { className: "mut", textContent: `A deleted tag stays here for ${plural(b.days, "day")}. Restore pushes the same manifest back to its tag, once every layer is still in the registry. `
-      + "Layers are freed only by garbage collection, which does not know about the Bin: run it after emptying the Bin, or Restore fails for the images it freed. Delete forever and Empty only forget the entry." }),
+    el("p", { className: "mut", textContent: `A deleted tag stays here for ${plural(b.days, "day")}. Its tag and manifest are already gone from the registry, but its layers stay on disk, so Restore can push the same manifest back to its tag.` }),
+    el("p", { className: "mut", textContent: "To free the space: empty the Bin (or let entries expire), then run garbage collection. Garbage collection does not know about the Bin: it frees the layers of everything here too, and Restore then fails for those images. So run it only once nothing here needs restoring. Empty and Delete forever only forget entries, they free nothing until garbage collection runs." }),
     ...(write && b.entries.length ? [el("div", { className: "bar" }, el("button", { type: "button", className: "danger", textContent: "Empty bin", onclick: () => void empty() }))] : []),
-    b.entries.length ? el("table", {}, el("thead", {}, el("tr", {}, ...["Image", "Digest", "Size", "Deleted", "Expires in", ...(write ? [""] : [])].map((h) => el("th", { textContent: h })))), el("tbody", {}, ...b.entries.map(row)))
+    ...(pick && b.entries.length ? [pick.bar] : []),
+    b.entries.length ? el("table", {}, el("thead", {}, el("tr", {}, ...(pick ? [pick.head] : []), ...["Image", "Digest", "Size", "Deleted", "Expires in", ...(write ? [""] : [])].map((h) => el("th", { textContent: h })))), el("tbody", {}, ...rows))
       : el("p", { className: "mut", textContent: "The Bin is empty." }));
 }
 
@@ -1960,7 +1993,7 @@ function leaveGoneNode() { // the selected node is gone: fall back to what holds
 // A desktop notification for the pushes in one sync, while the page is not the window in focus: push, switch away, hear when it lands.
 const canNotify = () => "Notification" in window && window.isSecureContext; // the browser offers it on HTTPS and localhost only
 function notifyPushes(evs) {
-  const refs = evs.filter((e) => e.type !== "deleted").map((e) => e.ref);
+  const refs = evs.filter((e) => e.type === "new" || e.type === "retagged").map((e) => e.ref); // a restore is not a push
   if (!refs.length || !prefs.notify || document.hasFocus() || !canNotify() || Notification.permission !== "granted") return;
   const more = refs.length > 5 ? ` and ${refs.length - 5} more` : "";
   const note = new Notification(refs.length === 1 ? "Pushed " + refs[0] : `${refs.length} pushes`, { body: refs.slice(0, 5).join("\n") + more, tag: "registry-push", icon: "/favicon.svg" });

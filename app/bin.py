@@ -106,8 +106,10 @@ class Bin:
         size = sum(s for b, s in blobs.items() if b not in stored)  # config and layers, the manifests themselves are small
         now = self.clock()
         kids = [d for d in stored if d != digest]
-        entries = [{"id": secrets.token_hex(6), "repo": repo, "tag": t, "digest": digest, "type": mtype, "size": size, "t": now, "kids": kids}
-                   for t in sorted(set(tags))]
+        with self.state.cond:  # the tag's own times, so a restored tag goes back to its place in the lists instead of looking new
+            times = {t: self.state.tags.get(f"{repo}:{t}", {}) for t in tags}
+        entries = [{"id": secrets.token_hex(6), "repo": repo, "tag": t, "digest": digest, "type": mtype, "size": size, "t": now, "kids": kids,
+                    "changed": times[t].get("changed"), "first": times[t].get("first")} for t in sorted(set(tags))]
         self.state.bin_add(entries, {d: {"type": t, "b64": encode(b)} for d, (b, t) in stored.items()}, now)
         return [e["id"] for e in entries]
 
@@ -157,6 +159,7 @@ class Bin:
         self.check_tag(c, repo, tag, digest)  # again, closest to the write: a push in between is not overwritten (the registry has no conditional PUT, so a gap remains)
         root = manifests[digest]
         c.call("PUT", f"/v2/{repo}/manifests/{tag}", {"Content-Type": root["type"]}, decode(root["b64"]), ok=(201,))
+        self.state.mark_restored(f"{repo}:{tag}", digest, e.get("changed"), e.get("first"))
         self.state.bin_remove({id_})
         return {"repo": repo, "tag": tag, "digest": digest}
 
