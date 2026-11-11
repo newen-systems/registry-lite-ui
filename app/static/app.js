@@ -1019,7 +1019,7 @@ function linkDigests(n, rs) {
 }
 function tagsList(n) {
   lazyReset();
-  const pick = canWrite() ? pickBar({ id: "tags:" + n.path, key: (t) => t.tag, keep: (k) => n.tagMap.has(k), noun: "tag", // no checkboxes for a user who cannot delete
+  const pick = canWrite() ? pickBar({ id: "tags:" + n.path, key: (t) => t.tag, keep: (k) => n.tagMap.has(k), noun: "tag", max: Infinity, // deleteTags splits into batches; no checkboxes for a user who cannot delete
     onDelete: (keys) => deleteTags(n, n.tagList.filter((t) => keys.has(t.tag))) }) : null;
   const rowsOf = new Map();
   const entry = (t) => {
@@ -1047,7 +1047,7 @@ function pickBar(o) {
   const st = stateOf(o.id);
   st.picked ??= new Set();
   for (const k of st.picked) if (!o.keep(k)) st.picked.delete(k);
-  const max = cfg.maxBatch || 100;
+  const max = o.max ?? (cfg.maxBatch || 100);
   const boxes = new Map();
   let vis = [];
   const all = el("input", { type: "checkbox", "aria-label": `Select every ${o.noun} shown` });
@@ -1716,7 +1716,6 @@ function repoStorage(n) {
     card(`Not ${word} in 180 days`, el("span", { className: staleNames(180).size ? "warnfg" : "", textContent: `${plural(staleNames(180).size, "tag")}, frees ${size(staleFrees.bytes)}` })),
     card("Age source", src));
   const sum = rows.reduce((a, t) => a + t.frees, 0) || 1, top = Math.max(1, ...rows.map((t) => t.frees)) / sum;
-  const max = cfg.maxBatch || 100;
   const choose = el("select", { "aria-label": "Quick select", onchange: () => {
     const picked = quickSelect(choose.value, rows, Date.now() / 1000);
     choose.selectedIndex = 0; // an action menu: the same choice can be made again
@@ -1764,10 +1763,10 @@ function repoStorage(n) {
     holder.replaceChildren(el("table", { className: "sortable" }, el("thead", {}, el("tr", {}, el("th", { className: "pick" }, all), ...head)), el("tbody", {}, ...list.map(tr))));
     const k = st.picked.size, f = freedBytes(d, st.picked);
     sel.hidden = !k;
-    const go = el("button", { type: "button", className: "danger", textContent: cfg.binDays ? `Move ${plural(k, "tag")} to bin` : `Delete ${plural(k, "tag")}`, disabled: !canWrite() || k > max,
+    const go = el("button", { type: "button", className: "danger", textContent: cfg.binDays ? `Move ${plural(k, "tag")} to bin` : `Delete ${plural(k, "tag")}`, disabled: !canWrite(),
       onclick: () => void deleteTags(n, rows.filter((t) => st.picked.has(t.tag)).map((t) => n.tagMap.get(t.tag))) });
     sel.replaceChildren(el("span", { className: "selcount", textContent: `${plural(k, "tag")} selected` }),
-      el("span", { textContent: `Frees about ${size(f.bytes)} after garbage collection. Layers other tags still use are kept.` + (f.extra ? ` ${plural(f.extra, "more tag")} on the same digest go too.` : "") + (k > max ? ` At most ${max} at once.` : "") }),
+      el("span", { textContent: `Frees about ${size(f.bytes)} after garbage collection. Layers other tags still use are kept.` + (f.extra ? ` ${plural(f.extra, "more tag")} on the same digest go too.` : "") }),
       el("span", { className: "grow" }), el("button", { type: "button", textContent: "Clear", onclick: () => { st.picked.clear(); choose.value = ""; draw(); } }), ...(canWrite() ? [go] : []));
   };
   paintRows();
@@ -2093,16 +2092,37 @@ function scriptSection(o, children) { // children: a function that says whether 
   return box;
 }
 
-// Delete several tags: one confirm that lists them and the other tags that share their digests, one call, then what happened to each.
+// The tags of one bulk delete in calls of at most `max` (the server's cap). Indexes go first, so a platform child is not refused
+// while its index waits in a later call, and every tag of one digest stays in one call, so the later ones are not reported as skipped.
+function batches(picked, max) {
+  const groups = new Map();
+  for (const t of [...picked].sort((a, b) => (b.index ? 1 : 0) - (a.index ? 1 : 0))) groups.set(t.digest, [...(groups.get(t.digest) || []), t]);
+  const out = [];
+  for (const g of groups.values()) {
+    for (let i = 0; i < g.length; i += max) {
+      const part = g.slice(i, i + max);
+      if (!out.length || out.at(-1).length + part.length > max) out.push([]);
+      out.at(-1).push(...part);
+    }
+  }
+  return out;
+}
+// Delete several tags: one confirm that lists them and the other tags that share their digests, calls of at most the server's cap,
+// then what happened to each. A call that fails stops the rest, and what went before it is still reported.
 async function deleteTags(n, picked) {
   const v = await confirmDeleteTags(n, picked);
   if (!v) return;
-  let results;
+  const parts = batches(picked, cfg.maxBatch || 100), results = [];
   try {
-    banner(goneVerb(plural(picked.length, "tag")));
-    results = (await api("/api/delete-tags", { repo: n.path, tags: picked.map((t) => t.tag), children: v.children })).results;
+    for (const [i, part] of parts.entries()) {
+      banner(goneVerb(plural(picked.length, "tag")) + (parts.length > 1 ? ` (call ${i + 1} of ${parts.length})` : ""));
+      results.push(...(await api("/api/delete-tags", { repo: n.path, tags: part.map((t) => t.tag), children: v.children })).results);
+    }
     banner("");
-  } catch (e) { banner(e.message, true); return; }
+  } catch (e) {
+    banner(e.message, true);
+    if (!results.length) return;
+  }
   // Both the Tags and the Storage tab pick tags; a failed tag stays picked in each, to retry or look at
   for (const id of ["tags:", "rstor:"]) for (const r of results) if (r.status !== "failed") stateOf(id + n.path).picked?.delete(r.tag);
   await touch(n.path).catch(() => { /* the next sync shows it */ });
@@ -2137,6 +2157,14 @@ function confirmDeleteTags(n, picked) {
     go.onclick = () => { result = { children }; dlg.close(); };
     const cancel = el("button", { type: "button", textContent: "Cancel", onclick: () => dlg.close() });
     const warn = [];
+    // Every tag in the repository goes (select all is one click away): the name has to be typed before Delete is enabled.
+    const everything = total > 1 && total >= n.tagList.length;
+    const typed = el("input", { type: "text", autocomplete: "off", spellcheck: false, "aria-label": `Type ${n.path} to confirm`, oninput: () => { go.disabled = typed.value.trim() !== n.path; } });
+    if (everything) {
+      go.disabled = true;
+      warn.push(el("p", { className: "dlg-warn", role: "alert", textContent: `This deletes every tag in ${n.path} (${plural(total, "tag")}), so nothing is left in the repository.` }),
+        el("label", { className: "confirmname" }, "Type ", el("code", { textContent: n.path }), " to confirm ", typed));
+    }
     if (extra.length) warn.push(el("p", { className: "dlg-warn", role: "alert", textContent: `The registry deletes by digest, so ${plural(extra.length, "tag")} you did not select ${extra.length === 1 ? "goes" : "go"} too, sharing a digest with a selected tag: ${namesOf(extra)}.` }));
     for (const g of groups.slice(0, 5)) warn.push(el("p", { className: "dlg-warn", textContent: `${g.length === 2 ? g.join(" and ") : namesOf(g)} share one digest. It is deleted once, and each of them is reported deleted.` }));
     if (groups.length > 5) warn.push(el("p", { className: "dlg-warn", textContent: `${groups.length - 5} more groups of selected tags share a digest.` }));

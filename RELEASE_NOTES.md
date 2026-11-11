@@ -6,6 +6,11 @@ registry-lite-ui is a web UI for a plain `registry:2` that browses, copies, move
 
 ## Changes in 0.3.16
 
+### New Features
+
+- A bulk delete is no longer capped at 100 tags. The Tags view and a repository's Storage tab send the selection in calls of at most 100 (the server's cap), indexes first and every tag of one digest in the same call, and show the progress ("call 1 of 2")
+- Deleting every tag in a repository at once (Select all, or a quick select that picks them all) asks you to type the repository name before Delete is enabled
+
 ### Bug Fixes
 
 - Move to bin (or Delete) from a repository's Storage tab now shows the results dialog and updates the Bin count, as the Tags view does. It used to fail after the delete went through, on the Tags view's selection, which that tab never opens, so it showed nothing and left the selection and the Bin count stale

@@ -258,6 +258,8 @@ tr.same td { background:var(--hover); } tr.same .dlink::after { background:var(-
 .props .note { display:block; margin-top:2px; font-size:12px; }
 th.pick, td.pick { width:20px; padding-right:0; } .pick input { width:16px; height:16px; margin:0; vertical-align:middle; accent-color:var(--acc); cursor:pointer; }
 .sbody > .dlg-warn { margin:var(--s2) 0; }
+.confirmname { display:flex; flex-wrap:wrap; align-items:center; gap:var(--s2); margin:var(--s2) 0; }
+.confirmname input { flex:1; min-width:12em; }
 .results td { font-size:13px; } .results td:last-child { overflow-wrap:anywhere; }
 .transfer .srow { border-top:1px solid var(--line); margin-top:var(--s3); }
 

@@ -211,11 +211,24 @@ test("moving tags to the Bin from the Storage tab clears that tab's selection an
   const stateOf = (id) => { if (!states.has(id)) states.set(id, {}); return states.get(id); };
   const calls = [];
   const deleteTags = load("deleteTags", {
-    confirmDeleteTags: async () => ({ children: false }), stateOf, banner: (t) => calls.push(`banner:${t}`), goneVerb: (w) => `Moving ${w} to the Bin...`,
+    confirmDeleteTags: async () => ({ children: false }), stateOf, cfg: { maxBatch: 100 }, batches: load("batches"), banner: (t) => calls.push(`banner:${t}`), goneVerb: (w) => `Moving ${w} to the Bin...`,
     plural: (n, w) => `${n} ${w}s`, api: async () => ({ results: [{ tag: "v1", status: "deleted" }, { tag: "v2", status: "deleted" }, { tag: "v3", status: "failed" }] }),
     touch: async () => calls.push("touch"), deleteResults: async () => calls.push("results"), renderPane: async () => calls.push("render"), $: () => ({ querySelector: () => null }),
   });
   await deleteTags({ path: "demo/app" }, ["v1", "v2", "v3"].map((tag) => ({ tag })));
   assert.deepEqual([...states.get("rstor:demo/app").picked], ["v3"]); // the failed one stays picked
   assert.deepEqual(calls, ["banner:Moving 3 tags to the Bin...", "banner:", "touch", "results", "render"]); // touch refreshes the Bin count
+});
+
+test("a bulk delete of more than the cap goes in calls of at most the cap, indexes first, a digest never split", () => {
+  const batches = load("batches");
+  const tags = Array.from({ length: 250 }, (_, i) => ({ tag: "v" + i, digest: "d" + Math.floor(i / 2) })); // two tags per digest
+  tags.push({ tag: "idx", digest: "di", index: true });
+  const out = batches(tags, 100);
+  assert.ok(out.every((b) => b.length <= 100), "no call over the cap");
+  assert.equal(out.flat().length, 251, "every tag once");
+  assert.equal(out[0][0].tag, "idx", "the index goes first");
+  for (const b of out) for (const t of b) assert.ok(b.some((o) => o !== t && o.digest === t.digest) || t.digest === "di", `${t.tag} kept with its digest`);
+  const big = batches(Array.from({ length: 150 }, (_, i) => ({ tag: "t" + i, digest: "same" })), 100); // one digest over the cap is split
+  assert.deepEqual(big.map((b) => b.length), [100, 50]);
 });
