@@ -8,8 +8,8 @@ let checked = null; // when the server last finished a walk of the registry
 
 // Preferences only, no data or secrets. Storage may be blocked, so every access is guarded.
 // expanded and selected are the tree state (node ids and the location hash), sidebar is its width in px.
-const DEFAULTS = { theme: "system", repoSort: "name", tagSort: "recent", packageSort: "name", live: true, refresh: 0, interval: 30, pageSize: 50, runtime: "podman", showEmpty: false, treeSizes: false, mapBy: "total", notify: false, tool: "pip", os: "linux", show: "all", sidebar: 280, selected: "/recent", expanded: [] };
-const CHOICES = { mapBy: ["total", "frees"], theme: ["system", "light", "dark"], repoSort: ["name", "recent"], tagSort: ["recent", "version"], packageSort: ["name", "recent"], runtime: ["podman", "docker"], tool: ["pip", "uv"], os: ["linux", "windows"], show: ["all", "containers", "helm", "python"], interval: [10, 30, 60, 300], refresh: [0, 10, 15, 30, 60], pageSize: [25, 50, 100, 200] };
+const DEFAULTS = { theme: "system", repoSort: "name", tagSort: "recent", packageSort: "name", live: true, refresh: 0, interval: 30, pageSize: 50, runtime: "podman", showEmpty: false, treeSizes: false, mapBy: "total", storageView: "map", notify: false, tool: "pip", os: "linux", show: "all", sidebar: 280, selected: "/recent", expanded: [] };
+const CHOICES = { mapBy: ["total", "frees"], storageView: ["map", "table"], theme: ["system", "light", "dark"], repoSort: ["name", "recent"], tagSort: ["recent", "version"], packageSort: ["name", "recent"], runtime: ["podman", "docker"], tool: ["pip", "uv"], os: ["linux", "windows"], show: ["all", "containers", "helm", "python"], interval: [10, 30, 60, 300], refresh: [0, 10, 15, 30, 60], pageSize: [25, 50, 100, 200] };
 const MAX_EXPANDED = 500;
 const SIDEBAR = [180, 640];
 let prefs = { ...DEFAULTS };
@@ -1562,7 +1562,9 @@ const STORAGE_COLS = [
   { key: "oldest", label: "Oldest used", tip: "The tag under this node that was used longest ago. Sorts oldest first.", val: (n) => n.oldest?.[0] ?? null, cmp: numCmp },
   { key: "newest", label: "Newest used", val: (n) => n.newest?.[0] ?? null, cmp: numCmp },
 ];
-const storageUI = { view: "map", open: new Set(), sort: { key: "size", dir: -1 }, sharedKey: null, gone: new Set() };
+// The Map or Table choice is a preference, so a reload keeps it.
+const setStorageView = (v) => { prefs.storageView = v; savePrefs(); };
+const storageUI = { open: new Set(), sort: { key: "size", dir: -1 }, sharedKey: null, gone: new Set() };
 // The rows below a shared item: the folders or repositories that use those layers, with the bytes each uses.
 const sharerRows = (n) => (n.sharers || []).map(([name, bytes]) => ({ name, kind: "sharer", size: bytes, held: bytes, tags: 0, oldest: null, newest: null, kids: [], path: name === "(this repository)" ? "" : n.path ? `${n.path}/${name}` : name }));
 const rowIcon = (n) => (n.kind === "folder" ? icon("folder") : n.kind === "repo" || n.kind === "tag" ? kindIcon(n.type || "image") : n.kind === "shared" ? icon("box") : null);
@@ -1575,11 +1577,10 @@ function storageTable(u, top, redraw) {
     const kids = order(kidsOf(n)), open = storageUI.open.has(key);
     const toggle = kids.length ? el("button", { type: "button", className: "linkbtn chevbtn", "data-fk": "c:" + key, "aria-expanded": String(open), "aria-label": `${open ? "Collapse" : "Expand"} ${n.name}`,
       onclick: () => { if (open) storageUI.open.delete(key); else storageUI.open.add(key); redraw(); } }, icon("chev", open ? "open" : "")) : el("span", { className: "chevgap" });
-    const href = n.kind === "tag" ? `#/repo/${n.repo}:${n.tag}` : n.kind === "repo" ? repoHash(n.repo) : n.kind === "sharer" && n.path ? `#/storage/${n.path}` : null;
+    // The name is the one way into a row: a folder opens in this view, a repository opens its Storage tab, where its tags are picked.
+    const href = n.kind === "tag" ? `#/repo/${n.repo}:${n.tag}` : n.kind === "repo" ? repoHash(n.repo) : (n.kind === "sharer" || n.kind === "folder") && n.path ? `#/storage/${n.path}` : null;
     const name = href ? el("a", { href, textContent: n.name }) : el("span", { textContent: n.name });
     const actions = [];
-    if (n.kind === "repo") actions.push(el("a", { href: repoHash(n.repo), textContent: "Select tags" }));
-    if (n.kind === "folder") actions.push(el("a", { href: `#/storage/${n.path}`, textContent: "Show in map" }));
     if (n.kind === "tag" && canWrite()) actions.push(el("button", { type: "button", className: "danger", textContent: "Delete", onclick: () => void deleteManifest(n.repo, n.tag, n.digest, async () => { storageUI.gone.add(`${n.repo}@${n.digest}`); banner("Deleted. Sizes update at the next usage scan."); redraw(); }) }));
     const indent = el("span", { className: "indent" }, toggle, ...(rowIcon(n) ? [el("span", { className: "ico" }, rowIcon(n))] : []));
     indent.style.paddingLeft = depth * 18 + "px";
@@ -1619,24 +1620,24 @@ async function storagePane(seq) {
   const redraw = () => keepFocus(holder, () => void body());
   const holder = el("div"), sharedBox = el("div");
   const legend = el("span", { className: "legendrow" }, `${ageHead()}:`, ...(u.mount ? AGE_STEPS.map(([, text], i) => el("span", { className: "legend" }, el("i", { className: "sw a" + i }), text)) : [el("span", { className: "legend" }, el("i", { className: "sw a-none" }), "unknown, needs the storage mount")]));
-  const toggleBtn = (view, text) => el("button", { type: "button", "aria-pressed": String(storageUI.view === view), textContent: text, onclick: () => { storageUI.view = view; void paint(); } });
+  const toggleBtn = (view, text) => el("button", { type: "button", "aria-pressed": String(prefs.storageView === view), textContent: text, onclick: () => { setStorageView(view); void paint(); } });
   const bar = el("div", { className: "bar" });
   const showShared = (k) => { // which folders use the layers a shared block stands for
     sharedBox.replaceChildren(el("h3", { textContent: k.name }), el("p", { className: "mut", textContent: `${size(k.size)} held once and used by more than one item${k.path ? ` in ${k.path}` : ""}. Bytes each of them uses:` }),
       el("table", { className: "sortable" }, el("tbody", {}, ...sharerRows(k).map((r) => el("tr", {}, el("td", {}, r.path ? el("a", { href: `#/storage/${r.path}`, textContent: r.name }) : r.name), el("td", { textContent: size(r.size) }))))));
   };
   const body = () => {
-    holder.replaceChildren(storageUI.view === "map" ? diskMap(u, node, nowSecs, showShared, () => { storageUI.view = "table"; void paint(); }, prefs.mapBy) : storageTable(u, node, redraw));
+    holder.replaceChildren(prefs.storageView === "map" ? diskMap(u, node, nowSecs, showShared, () => { setStorageView("table"); void paint(); }, prefs.mapBy) : storageTable(u, node, redraw));
     return Promise.resolve();
   };
   const foot = el("p", { className: "mut" });
   const paint = () => {
     sharedBox.replaceChildren();
-    foot.replaceChildren(storageUI.view === "map" ? `Click a folder to open it, a repository to pick tags to delete. ${prefs.mapBy === "total" ? "Area is every byte a block uses, so a layer used by two blocks counts in both and the blocks add up to more than the disk holds." : "Area is the bytes only a block holds, which deleting it frees. A layer several items use counts once, in a block named for what shares it, at the lowest folder that holds them all."}`
-      : "Click a header to sort each level. Shared size is what a node uses that something outside it uses too.");
+    foot.replaceChildren(prefs.storageView === "map" ? `Click a folder to open it, a repository to pick tags to delete. ${prefs.mapBy === "total" ? "Area is every byte a block uses, so a layer used by two blocks counts in both and the blocks add up to more than the disk holds." : "Area is the bytes only a block holds, which deleting it frees. A layer several items use counts once, in a block named for what shares it, at the lowest folder that holds them all."}`
+      : "Click a name to open it: a folder opens here, a repository opens its Storage tab to pick tags. Click a header to sort each level. Shared size is what a node uses that something outside it uses too.");
     const byBtn = (v, text, tip) => el("button", { type: "button", title: tip, "aria-pressed": String(prefs.mapBy === v), textContent: text, onclick: () => { prefs.mapBy = v; savePrefs(); scheduleTree(); void renderPane(); } }); // the pane is drawn again: the line above the map follows too
     bar.replaceChildren(el("div", { role: "group", "aria-label": "View", className: "seg" }, toggleBtn("map", "Map"), toggleBtn("table", "Table")),
-      ...(storageUI.view === "map" ? [el("span", { className: "mut" }, "Size by ", el("div", { role: "group", "aria-label": "Size by", className: "seg" },
+      ...(prefs.storageView === "map" ? [el("span", { className: "mut" }, "Size by ", el("div", { role: "group", "aria-label": "Size by", className: "seg" },
         byBtn("total", "Total", "Every byte the block uses, shared layers included"), byBtn("frees", "Frees", "Only the bytes that deleting it frees")))] : []), legend);
     return body();
   };
@@ -1645,7 +1646,7 @@ async function storagePane(seq) {
   const unread = u.unread?.count ? [el("p", { className: "hint", textContent: `${plural(u.unread.count, "tag")} could not be read and ${u.unread.count === 1 ? "is" : "are"} not counted (${u.unread.first.join(", ")}${u.unread.count > 5 ? ", ..." : ""}). The registry did not return their manifests.` })] : [];
   const pypi = cfg.pypi && !cfg.pypi.locked ? [el("p", { className: "mut", textContent: "Python packages are stored in GitLab, not on this registry's disk, so they are not counted here." })] : [];
   const hollow = node.kids.filter((k) => k.size === 0 && k.tags > 0).length;
-  const here = [...(hollow && storageUI.view === "map" && prefs.mapBy === "frees" ? [el("p", { className: "mut", textContent: `${plural(hollow, "item")} here ${hollow === 1 ? "holds" : "hold"} no bytes of their own (every layer is shared), so this map has no block for ${hollow === 1 ? "it" : "them"}. Size by Total shows ${hollow === 1 ? "it" : "them"}, and so does the table.` })] : []),
+  const here = [...(hollow && prefs.storageView === "map" && prefs.mapBy === "frees" ? [el("p", { className: "mut", textContent: `${plural(hollow, "item")} here ${hollow === 1 ? "holds" : "hold"} no bytes of their own (every layer is shared), so this map has no block for ${hollow === 1 ? "it" : "them"}. Size by Total shows ${hollow === 1 ? "it" : "them"}, and so does the table.` })] : []),
     ...(shownPath ? [el("p", { className: "mut" }, `${size(figureOf(node, prefs.mapBy))} ${prefs.mapBy === "total" ? "total" : "unique"} in ${plural(node.tags, "tag")} under ${shownPath}. `, ...(node.kind === "repo" ? [el("a", { href: repoHash(node.repo), textContent: "Open the repository" })] : []))] : [])];
   showMain(crumbNav(regLabel(), [{ text: "Storage", href: "#/storage" }, ...pathCrumbs(shownPath, "#/storage")]),
     el("div", { className: "storagehead" }, el("h2", { textContent: "Storage" }),
@@ -1785,13 +1786,13 @@ function folderStorage(n) {
   const holder = el("div");
   const draw = () => keepFocus(holder, () => {
     const press = (on) => String(on);
-    const toggleBtn = (view, text) => el("button", { type: "button", "data-fk": "v:" + view, "aria-pressed": press(storageUI.view === view), textContent: text, onclick: () => { storageUI.view = view; draw(); } });
+    const toggleBtn = (view, text) => el("button", { type: "button", "data-fk": "v:" + view, "aria-pressed": press(prefs.storageView === view), textContent: text, onclick: () => { setStorageView(view); draw(); } });
     const byBtn = (v, text, tip) => el("button", { type: "button", "data-fk": "b:" + v, title: tip, "aria-pressed": press(prefs.mapBy === v), textContent: text, onclick: () => { prefs.mapBy = v; savePrefs(); scheduleTree(); draw(); } });
     const bar = el("div", { className: "bar" }, el("div", { role: "group", "aria-label": "View", className: "seg" }, toggleBtn("map", "Map"), toggleBtn("table", "Table")),
-      ...(storageUI.view === "map" ? [el("span", { className: "mut" }, "Size by ", el("div", { role: "group", "aria-label": "Size by", className: "seg" },
+      ...(prefs.storageView === "map" ? [el("span", { className: "mut" }, "Size by ", el("div", { role: "group", "aria-label": "Size by", className: "seg" },
         byBtn("total", "Total", "Every byte the block uses, shared layers included"), byBtn("frees", "Frees", "Only the bytes that deleting it frees")))] : []));
-    const content = storageUI.view === "map"
-      ? diskMap(u, node, nowSecs, () => { location.hash = "#/storage/" + n.path; }, () => { storageUI.view = "table"; draw(); }, prefs.mapBy)
+    const content = prefs.storageView === "map"
+      ? diskMap(u, node, nowSecs, () => { location.hash = "#/storage/" + n.path; }, () => { setStorageView("table"); draw(); }, prefs.mapBy)
       : storageTable(u, node, draw);
     const summary = el("p", { className: "mut" }, `${size(figureOf(node, prefs.mapBy))} ${prefs.mapBy === "total" ? "total" : "unique"} in ${plural(node.tags, "tag")} under ${n.path}. `,
       el("a", { href: "#/storage/" + n.path, textContent: "Open in the Storage view" }), " for shared layers and growth.");
