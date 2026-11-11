@@ -45,6 +45,7 @@ def valid_storage(value):
 HOST_RE = re.compile(r"[A-Za-z0-9.-]+(:\d{1,5})?|\[[0-9A-Fa-f:]+\](:\d{1,5})?")
 DEFAULT_ENVIRONMENTS = "dev,test,uat,staging,prod"  # the lifecycle stages, in order, that the copy and move dialogs offer as promote shortcuts
 MAX_ENVIRONMENTS = 12
+MAX_REFS = 500  # tags /api/refs names for one digest
 MAX_TAGNAMES = 5000  # tag names /api/tagnames returns, so the answer stays small on a very large registry
 MEDIA_TYPE_RE = re.compile(r"[a-z0-9][a-z0-9!#$&^_.+-]{0,126}/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}")
 CREATED_RE = R.CREATED_RE
@@ -265,6 +266,14 @@ def routes(cfg):
             out.setdefault(repo, []).append(tag)
         return {"repos": out, "truncated": len(refs) > MAX_TAGNAMES, "empty": sorted(empty)[:MAX_TAGNAMES], "helm": sorted(helm)[:MAX_TAGNAMES]}
 
+    def refs(q):  # every repo:tag the poller has seen on a digest: where else a shared image lives, in this or other repositories
+        digest = one(q, "digest")
+        if not R.DIGEST_RE.fullmatch(digest):
+            raise R.RegistryError(400, "digest expected")
+        with cfg.state.cond:
+            found = sorted(k for k, v in cfg.state.tags.items() if v.get("digest") == digest)
+        return {"refs": found[:MAX_REFS], "more": max(0, len(found) - MAX_REFS)}
+
     def parents(q):  # the tagged indexes that list a digest as a child: what delete and move would refuse (409), shown up front
         repo, digest = R.check_repo(one(q, "repo")), one(q, "digest")
         if not R.DIGEST_RE.fullmatch(digest):
@@ -364,6 +373,7 @@ def routes(cfg):
         "/api/recent": recent,
         "/api/tagnames": tagnames,
         "/api/parents": parents,
+        "/api/refs": refs,
         "/api/usage": usage,
         "/api/bin": bin_view,
         "/api/ages": ages,

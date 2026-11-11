@@ -1279,6 +1279,18 @@ class Routes(unittest.TestCase):
             S.MAX_TAGNAMES = cap
         self.assertEqual(capped, {"repos": {"a/app": ["v1", "v2"]}, "truncated": True, "empty": ["gone/repo"], "helm": []})
 
+    def test_refs_names_every_tag_on_a_digest_in_every_repository(self):
+        self.cfg.state.tags = {"a/app:v1": {"digest": D("1")}, "b/copy:prod": {"digest": D("1")}, "a/app:latest": {"digest": D("1")}, "a/app:v2": {"digest": D("2")}}
+        self.assertEqual(self.get["/api/refs"]({"digest": [D("1")]}), {"refs": ["a/app:latest", "a/app:v1", "b/copy:prod"], "more": 0})
+        self.assertEqual(self.get["/api/refs"]({"digest": [D("9")]}), {"refs": [], "more": 0})
+        S.MAX_REFS, cap = 1, S.MAX_REFS
+        try:
+            self.assertEqual(self.get["/api/refs"]({"digest": [D("1")]}), {"refs": ["a/app:latest"], "more": 2})
+        finally:
+            S.MAX_REFS = cap
+        with self.assertRaises(R.RegistryError):
+            self.get["/api/refs"]({"digest": ["latest"]})
+
     def test_parents_names_the_tagged_indexes_that_list_a_digest(self):
         parents = self.get["/api/parents"]
         child = parents({"repo": ["a/app"], "digest": [D("b")]})

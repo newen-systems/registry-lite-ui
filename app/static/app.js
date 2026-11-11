@@ -1255,6 +1255,17 @@ function digestRow(n, m) {
       : ["Platform digest", "one platform inside the index"];
   return [label, el("span", {}, copyValue(m.digest, "Copy digest"), el("span", { className: "mut note", textContent: note }))];
 }
+// Every other tag on this digest, in this repository and in others (a copy, a promote, a mirror), from the poller's tag map.
+function referencesSection(path, n, r) {
+  if (!r) return [];
+  const self = n.kind === "tag" ? `${path}:${n.tag}` : null;
+  const others = r.refs.filter((x) => x !== self);
+  const repos = new Set(others.map(repoOf));
+  const text = others.length ? `${plural(others.length + r.more, "other tag")} in ${plural(repos.size, "repository", "repositories")}${r.more ? " (the first ones listed)" : ""} point at this digest. `
+    + `A delete here removes the digest from ${path}, with every tag it has there. Tags in other repositories keep it, and the layers they use stay.` : "No other tag, in this repository or another, points at this digest.";
+  return [el("h3", { textContent: "References" }), el("p", { className: "mut", textContent: text }),
+    ...(others.length ? [el("div", { className: "tagchips" }, ...others.map((x) => el("a", { className: "tagchip", href: "#/repo/" + x, textContent: x })))] : [])];
+}
 // What the tag pointed at before, from the registry storage: each digest it took, when, and whether that manifest is still there.
 function historySection(path, m, history) {
   if (!history?.length) return [];
@@ -1298,9 +1309,10 @@ async function manifestPane(n, seq) {
   if (n.kind === "tag") await ensurePlats(n);
   const history = n.kind === "tag" && cfg.storageMount ? await api(`/api/history?repo=${encodeURIComponent(path)}&tag=${encodeURIComponent(n.tag)}`).catch(() => []) : [];
   if (n.kind === "tag") await loadAges(t.parent);
+  const refs = await api("/api/refs?digest=" + encodeURIComponent(m.digest)).catch(() => null); // older servers have no /api/refs
   if (seq !== paneSeq) return;
   const sharing = t.parent.tagList.filter((x) => x.digest === m.digest).map((x) => x.tag); // from the tag list the pane already holds
-  showMain(crumbs(n), manifestHeading(n, t, path, artifactKind(m)), actions(path, ref, m.digest), el("table", { className: "props" }, ...manifestProps(n, m, path, sharing)),
+  showMain(crumbs(n), manifestHeading(n, t, path, artifactKind(m)), actions(path, ref, m.digest), el("table", { className: "props" }, ...manifestProps(n, m, path, sharing)), ...referencesSection(path, n, refs),
     ...(n.kind === "tag" ? [commandsEl(path, n.tag, m.digest, artifactKind(m))] : []), ...platformSections(n, m), ...historySection(path, m, history), ...layersSection(m));
 }
 
