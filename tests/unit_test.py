@@ -1666,7 +1666,8 @@ class UsageAges(unittest.TestCase):
         self.assertIsNone(U.blob_age(root, D("9")))
         self.assertIsNone(U.blob_age(None, D("2")))
         self.assertIsNone(U.blob_age(root, "sha256:../../x"))
-        self.assertEqual(U.disk_total(root), (1, 1))
+        self.assertEqual(U.disk_total(root), (1, 1, 1))
+        self.assertEqual(U.disk_total(root, {D("2")}), (1, 1, 0))
 
 
 def blobs(**kw):
@@ -1862,6 +1863,34 @@ class UsageScan(unittest.TestCase):
         (point,) = st.usage_history()
         self.assertEqual((point["total"], point["repos"]), (len(image) + 43, {"a/x": len(image) + 43}))
         self.assertIs(u.snapshot(), out)
+
+    def test_garbage_collection_figures_follow_every_manifest_the_storage_holds(self):
+        """Garbage collection (no --delete-untagged) keeps the blobs of every manifest revision, tagged or not, and deletes the rest."""
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root)
+        img = lambda layer, n: ('{"config":{"digest":"%s","size":3},"layers":[{"digest":"%s","size":%d}]}' % (D("c"), layer, n)).encode()  # noqa: E731
+        tagged, untagged, deleted = img(D("1"), 10), img(D("2"), 20), img(D("3"), 30)
+        blobs = {R.hashed(b, "sha256:"): b for b in (tagged, untagged, deleted)}
+        blobs.update({D("c"): b"abc", D("1"): b"x" * 10, D("2"): b"x" * 20, D("3"): b"x" * 30, D("4"): b"x" * 40})  # 4: no manifest uses it
+        for dg, body in blobs.items():
+            path = U.blob_path(root, dg)
+            os.makedirs(os.path.dirname(path))
+            with open(path, "wb") as f:
+                f.write(body)
+        rev = os.path.join(root, R.STORAGE, "repositories", "a", "x", "_manifests", "revisions", "sha256")
+        for body, link in ((tagged, True), (untagged, True), (deleted, False)):  # a delete over the API removes the link file only
+            d = os.path.join(rev, R.hashed(body, "sha256:").split(":")[1])
+            os.makedirs(d)
+            if link:
+                open(os.path.join(d, "link"), "w").write(R.hashed(body, "sha256:"))
+        self.assertEqual(U.revisions(root), {R.hashed(tagged, "sha256:"): "a/x", R.hashed(untagged, "sha256:"): "a/x"})
+        st = P.State(clock=Clock())
+        st.update({"a/x"}, {"a/x:1": R.hashed(tagged, "sha256:")})
+        st.mark_baselined()
+        out = U.Usage(object(), st, root, clock=Clock()).scan()
+        self.assertEqual(out["gcFrees"], len(deleted) + 30 + 40)  # the deleted manifest, its own layer and the loose blob
+        self.assertEqual(out["untagged"], len(untagged) + 20)  # the config is shared with the tagged image, so it is not counted
+        self.assertEqual((out["total"], out["tags"]), (len(tagged) + 13, 1))  # the tag figures are unchanged by untagged manifests
 
     def test_scan_without_storage_reads_over_the_api(self):
         image = b'{"config":{"digest":"%s","size":3},"layers":[]}' % D("1").encode()

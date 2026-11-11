@@ -64,18 +64,47 @@ def fs_usage(path):
     return {"total": v.f_blocks * v.f_frsize, "used": (v.f_blocks - v.f_bfree) * v.f_frsize, "free": v.f_bavail * v.f_frsize}
 
 
-def disk_total(mount):
-    """(bytes, files) of every blob data file in the storage, referenced by a tag or not."""
-    total = files = 0
+def disk_total(mount, keep=()):
+    """(bytes, files, loose) of every blob data file in the storage, referenced by a tag or not. loose: the bytes of those whose
+    digest is not in `keep`, which garbage collection deletes when keep is every blob a manifest revision uses."""
+    total = files = loose = 0
     root = os.path.join(mount, R.STORAGE, "blobs")
     for here, _, names in os.walk(root):
         if "data" in names:
             try:
-                total += os.stat(os.path.join(here, "data")).st_size
-                files += 1
+                n = os.stat(os.path.join(here, "data")).st_size
             except OSError:
-                pass
-    return total, files
+                continue
+            total += n
+            files += 1
+            if f"{os.path.basename(os.path.dirname(os.path.dirname(here)))}:{os.path.basename(here)}" not in keep:
+                loose += n
+    return total, files, loose
+
+
+def revisions(mount):
+    """{digest: repo} of every manifest the storage still holds, tagged or not. Garbage collection without --delete-untagged
+    keeps every blob these use. A manifest deleted over the API leaves its revision directory behind without the link file."""
+    out = {}
+    root = os.path.join(mount, R.STORAGE, "repositories")
+    for here, dirs, _ in os.walk(root):
+        if "_manifests" in dirs:
+            rev = os.path.join(here, "_manifests", "revisions")
+            try:
+                algs = os.listdir(rev)
+            except OSError:
+                algs = []
+            for alg in algs:
+                try:
+                    hexes = os.listdir(os.path.join(rev, alg))
+                except OSError:
+                    continue
+                for hexed in hexes:
+                    d = f"{alg}:{hexed}"
+                    if R.DIGEST_RE.fullmatch(d) and os.path.isfile(os.path.join(rev, alg, hexed, "link")):
+                        out.setdefault(d, os.path.relpath(here, root))
+        dirs[:] = [d for d in dirs if not d.startswith("_")]  # _manifests, _layers, _uploads: a repository name never starts with _
+    return out
 
 
 def manifest_blobs(data, mtype=None):
@@ -383,7 +412,13 @@ class Usage(threading.Thread):
         for ref, digest in tags.items():
             if digest not in cache:
                 cache[digest] = self.cache.get(digest) or blobs_of(self.reader(ref.rpartition(":")[0]), digest)
-        self.cache = {d: v for d, v in cache.items() if v[0]}  # digests no tag points at any more are dropped; a failed read is tried again
+        held = {}  # every blob a manifest still in the storage uses, tagged or not: what garbage collection keeps
+        for digest, repo in (revisions(self.mount) if self.mount else {}).items():
+            if digest not in cache:
+                cache[digest] = self.cache.get(digest) or blobs_of(self.reader(repo), digest)
+            held.update(cache[digest][0])
+        self.cache = {d: v for d, v in cache.items() if v[0]}  # digests no manifest uses any more are dropped; a failed read is tried again
+        cache = {d: cache[d] for d in set(tags.values())}  # the figures below are for tags
         ages = {}
         if self.mount:  # layers only: the UI itself reads manifests and configs, which would make every image look used
             for _, layers in cache.values():
@@ -397,16 +432,16 @@ class Usage(threading.Thread):
             kinds = {d: v.get("kind") for d, v in self.state.meta.items() if v.get("kind")}
         result = analyse(tags, by_digest, ages, kinds)
         unread = sorted(ref for ref, digest in tags.items() if not by_digest.get(digest))  # manifests that could not be read: not in any figure
-        disk = files = None
+        disk = files = loose = None
         if self.mount:
-            disk, files = disk_total(self.mount)
+            disk, files, loose = disk_total(self.mount, set(held) | set(result["sizes"]))
         now = self.clock()
         # Judged per scan: when no layer has an access time newer than its modification time, atime is not being recorded (noatime, or
         # an NFS server that does not update it) and every age is a push time.
         recorded = any(a[1] == "atime" for a in ages.values())
         result.update({"updated": int(now), "mount": bool(self.mount), "disk": disk, "files": files, "tags": len(tags), "blobs": len({b for v, _ in cache.values() for b in v}),
                        "unread": {"count": len(unread), "first": unread[:5]}, "atime": recorded if ages else None, "stale": stale_summary(result, by_digest, now), "by_digest": by_digest,
-                       "unreferenced": max(0, disk - sum(result["sizes"].values())) if disk is not None else None})
+                       "gcFrees": loose, "untagged": sum(n for b, n in held.items() if b not in result["sizes"]) if self.mount else None})
         log.info("usage scan: %d tags, %d manifests read, %d unread, %d layer ages (%d atime), disk %s bytes in %s files",
                  len(tags), len(by_digest) - sum(1 for b in by_digest.values() if not b), len(unread), len(ages),
                  sum(1 for a in ages.values() if a[1] == "atime"), disk, files)
