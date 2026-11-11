@@ -1629,7 +1629,10 @@ async function storagePane(seq) {
     card("Largest repository", biggest ? [el("a", { href: repoHash(biggest.repo), textContent: biggest.repo }), `, ${size(own(biggest))}`] : "none"),
     card(`Not ${ageWord()} in 180 days`, stale ? el("span", { className: stale.tags ? "warnfg" : "", textContent: `${size(stale.frees)}, ${plural(stale.tags, "tag")}` }) : "needs the storage mount",
       stale ? el("div", { className: "mut", textContent: "What garbage collection frees if all of them go." }) : null),
-    card("Untagged layers (GC frees now)", u.unreferenced != null ? size(u.unreferenced) : "needs the storage mount", u.unreferenced != null ? null : el("div", { className: "mut", textContent: "Set UI_REGISTRY_STORAGE_MOUNT." })),
+    // What garbage collection (without --delete-untagged) deletes: blobs no manifest still in the storage uses, the Bin's included
+    card("Garbage collection frees now", u.gcFrees != null ? size(u.gcFrees) : "needs the storage mount", el("div", { className: "mut", textContent: u.gcFrees != null
+      ? (cfg.binDays ? "Layers no manifest uses any more, the Bin's included: run it once the Bin is empty." : "Layers no manifest uses any more.") : "Set UI_REGISTRY_STORAGE_MOUNT." })),
+    ...(u.untagged ? [card("Kept by untagged images", size(u.untagged), el("div", { className: "mut", textContent: "Older images a tag was pushed over. Their manifests are still in the registry, so garbage collection keeps their layers." }))] : []),
     growthCard(u.history));
   const redraw = () => keepFocus(holder, () => void body());
   const holder = el("div"), sharedBox = el("div");
@@ -2567,7 +2570,8 @@ function gcSection() {
       el("p", { textContent: "Garbage collection frees disk space from deleted images. It runs on the host, not from this page." }),
       el("div", { className: "segs" }, form, seg),
       el("ol", { className: "steps" }, ...gcSteps(tool, storage)),
-      ...(cfg.binDays ? [el("p", { className: "mut", textContent: "Deleted tags wait in the Bin. Their layers stay in the registry until this runs, so run it after emptying the Bin: a layer it frees can no longer be restored." })] : []),
+      ...(cfg.binDays ? [el("p", { className: "mut", textContent: "Deleted tags wait in the Bin with their layers still on disk. The order is: move tags to the Bin, empty the Bin once nothing there needs restoring, then run this. It does not know about the Bin: anything still there when it runs loses its layers, and Restore then fails for it. Emptying the Bin frees nothing by itself." })] : []),
+      el("p", { className: "mut", textContent: "It frees only layers no manifest uses. An older image a tag was pushed over keeps its manifest, untagged, and so keeps its layers: Storage shows how much they hold, as Kept by untagged images." }),
       el("p", { className: "mut", textContent: "Never add --delete-untagged: it deletes the child manifests of multi-arch images and breaks them." }),
       el("p", { className: "slabel", textContent: "Remove an empty repository (registry stopped)" }),
       el("p", { className: "mut", textContent: "The registry API cannot delete a repository, and garbage collection leaves its empty directory behind. With the registry stopped, remove the directory yourself:" }),
