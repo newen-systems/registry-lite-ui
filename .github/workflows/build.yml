@@ -44,8 +44,8 @@ jobs:
           podman run -d --name ui --network ci -p 8080:8080 --read-only -v ui-state:/state \
             -e REGISTRY_URL=http://registry:5000 localhost/ui:amd64
           for i in $(seq 30); do curl -fs localhost:5000/v2/ && curl -fs localhost:8080/healthz && break; sleep 1; done
-          curl -fs localhost:8080/api/recent | jq -e .persistent  # history goes to /state without UI_STATE_DIR set
-          podman exec ui python -c "import os; print(os.getuid())" | grep -qx 65534  # distroless: no shell, no id
+          curl -fs localhost:8080/api/recent | jq -e .persistent  # history goes to /state/data (image default) on the /state volume
+          podman exec ui python -c "print(next(l.split()[1] for l in open('/proc/1/status') if l.startswith('Uid:')))" | grep -qx 65534  # server dropped to 65534; exec runs as root
           podman exec registry id -u | grep -qx 65534
           skopeo copy --dest-tls-verify=false docker://docker.io/library/busybox:latest docker://localhost:5000/ci/busybox:1
           sleep 2
@@ -121,7 +121,7 @@ jobs:
           VERSION: ${{ steps.decide.outputs.version }}
         run: |
           podman run -d --name ui -p 8080:8080 --read-only -v ui-state:/state \
-            -e REGISTRY_URL=http://127.0.0.1:5000 -e UI_STATE_DIR=/state "$REF"
+            -e REGISTRY_URL=http://127.0.0.1:5000 "$REF"
           for i in $(seq 30); do curl -fs localhost:8080/healthz && break; sleep 1; done
           curl -fs localhost:8080/healthz
           # /api/config asks the registry, which this run does not start, so read the baked-in value

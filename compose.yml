@@ -36,11 +36,9 @@ services:
     build:
       context: .
       dockerfile: Containerfile
-    # Runs as the image's uid 65534 by default, which matches the registry here. If your registry runs as another
-    # uid (for example a host storage dir owned by it), start the UI as root and let it drop to that uid, so it can
-    # read the storage without staying root. Uncomment both lines and set the ids to the registry's:
-    #   user: "0:0"            # start as root only so the UI can chown /state and drop privileges
-    #   environment: PUID: "1000"; PGID: "1000"   # merge these two keys into the environment block below
+    # Runs as uid 65534 by default (set PUID/PGID to change it, no `user:` line needed), which matches the registry
+    # here. To read a registry storage directory owned by another uid, set PUID/PGID to it, or PUID=0 PGID=0 to read
+    # a root-owned one. See README, "Permission denied".
     ports: ["${UI_BIND:-127.0.0.1}:${UI_PORT:-8080}:8080"]
     environment:
       REGISTRY_URL: http://registry:5000
@@ -57,7 +55,8 @@ services:
       UI_POLL_MIN: "${UI_POLL_MIN:-10}"
       UI_USAGE_INTERVAL: "${UI_USAGE_INTERVAL:-3600}"
       UI_BIN_DAYS: "${UI_BIN_DAYS:-7}"
-      UI_STATE_DIR: /state
+      UI_STATE_DIR: /state/data  # a sub-path the UI creates and owns, so a root-owned fresh volume still persists history
+      # PUID: "0"   # and PGID: "0" to run as root, for a registry storage dir only root can read (README, "Permission denied")
       UI_MAX_EVENTS: "${UI_MAX_EVENTS:-1000}"
     volumes: [ui-state:/state, registry-data:/registry:ro]  # host dir instead: - /data/registry:/registry:ro,z (same path the registry mounts)
     mem_limit: 128m
@@ -70,6 +69,7 @@ services:
       start_period: 10s
     read_only: true
     cap_drop: [ALL]
+    cap_add: [CHOWN, SETGID, SETUID]  # so the root-started image can create UI_STATE_DIR and drop to PUID:PGID, then it holds none
     security_opt: ["no-new-privileges:true"]
     restart: unless-stopped
 

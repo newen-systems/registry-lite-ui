@@ -7,18 +7,19 @@ ARG BASE_IMAGE=cgr.dev/chainguard/python:latest@sha256:31dd69d84fe5235fe18f8ceb5
 FROM ${BUILD_IMAGE} AS files
 USER 0
 COPY app /out/app
-# files must be readable by uid 65534 whatever umask the build host checked them out with
-RUN chmod -R a=rX /out/app && mkdir /out/state
+# files must be readable by any uid the image drops to, whatever umask the build host checked them out with
+RUN chmod -R a=rX /out/app
 
 FROM ${BASE_IMAGE}
 ARG APP_VERSION=dev
 ARG APP_REVISION=unknown
-# Recent history goes to /state unless UI_STATE_DIR is set empty. Mount a volume there to keep it when the container is replaced.
-ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 APP_VERSION=${APP_VERSION} APP_REVISION=${APP_REVISION} UI_STATE_DIR=/state
+# Recent history goes to UI_STATE_DIR unless it is set empty. server.py creates it at start, owned by the uid it
+# drops to, so nothing is baked here. Default /state/data: mount a volume at /state (a fresh one is root-owned) and
+# the UI creates /state/data under it, which it can then write whatever uid it runs as. Replace with your own path to override.
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 APP_VERSION=${APP_VERSION} APP_REVISION=${APP_REVISION} UI_STATE_DIR=/state/data
 COPY --from=files /out/app /app
-COPY --from=files --chown=65534:65534 /out/state /state
-# nobody, as before: the base's own nonroot user is 65532
-USER 65534:65534
+# Starts as root so server.py can drop to PUID:PGID (default 65534:65534, PUID=0 PGID=0 stays root), linuxserver-style.
+USER 0
 LABEL org.opencontainers.image.source=https://github.com/newen-systems/registry-lite-ui \
       org.opencontainers.image.version=${APP_VERSION} \
       org.opencontainers.image.revision=${APP_REVISION}

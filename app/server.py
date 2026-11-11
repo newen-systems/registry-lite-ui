@@ -625,42 +625,66 @@ def _int_id(env, *names):
     return None
 
 
+DEFAULT_UID = DEFAULT_GID = 65534  # nobody: the uid the image drops to when PUID/PGID are unset
+
+
+def _make_state_dir(env, uid, gid):
+    """Create UI_STATE_DIR if it does not exist, owned by uid:gid. Never touch it if it already exists (its
+    writability is checked later), and never chown anything else. Best effort: a failure falls back to memory-only."""
+    state_dir = env.get("UI_STATE_DIR")
+    if not state_dir or os.path.exists(state_dir):
+        return
+    try:
+        os.makedirs(state_dir)
+        os.chown(state_dir, uid, gid)  # the directory this call just created, not a pre-existing path
+    except OSError as e:
+        log.warning("could not create state dir %s (%s): history is kept in memory only", state_dir, e)
+
+
 def drop_privileges(env):
-    """When started as root with PUID/PGID, hand the state dir to that id and drop to it for good, before anything
-    reads a secret or key or binds a socket. The image is distroless with no shell, so this is done in Python here.
-    PUID/PGID win over UID/GID. Non-root start is left as is: a matching PUID is fine, a different one is logged."""
+    """linuxserver-style: the image starts as root and drops to PUID:PGID here, before anything reads a key or
+    secret or binds. PUID/PGID default to 65534 and win over UID/GID. PUID=0 PGID=0 stays root with no drop. Started
+    non-root (compose `user:`), it runs as that uid and only logs if PUID differs. No existing path is ever chowned;
+    only a missing UI_STATE_DIR is created, owned by the target id. The image is distroless with no shell, so this
+    is done in Python, not an entrypoint."""
     puid = _int_id(env, "PUID", "UID")
     pgid = _int_id(env, "PGID", "GID")
-    uid = os.getuid()
-    if uid != 0:
-        if puid is not None and puid != uid:
-            log.warning("PUID %s is set but the process is uid %s, not root: start the container as root (user: \"0:0\") "
-                        "to run as a different uid. Continuing as %s", puid, uid, uid)
-        return
     if puid is None:
-        log.warning("running as root (uid 0): set PUID and PGID (with user: \"0:0\") to run as the registry's uid instead")
+        puid = DEFAULT_UID
+    if pgid is None:
+        pgid = puid if (env.get("PUID") or env.get("UID")) else DEFAULT_GID
+    uid = os.getuid()
+    if uid != 0:  # someone set compose `user:`: run as given, cannot and must not switch uid
+        if puid != uid and (env.get("PUID") or env.get("UID")):
+            log.warning("PUID %s is set but the container did not start as root (running as uid %s): staying %s. "
+                        "Drop the `user:` override to let the image start as root and switch uid", puid, uid, uid)
+        _make_state_dir(env, uid, os.getgid())
         return
-    gid = pgid if pgid is not None else puid
-    state_dir = env.get("UI_STATE_DIR")
-    if state_dir and os.path.isdir(state_dir):  # so the new uid can write state.json; ponytail: one level deep, the dir holds only state.json
-        for path in [state_dir] + [os.path.join(state_dir, e) for e in os.listdir(state_dir)]:
-            try:
-                os.chown(path, puid, gid)
-            except OSError as e:
-                log.warning("could not chown %s to %s:%s: %s", path, puid, gid, e)
+    if puid == 0 and pgid == 0:
+        log.info("PUID=0 PGID=0: running as root, not dropping privileges")
+        _make_state_dir(env, 0, 0)
+        return
+    _make_state_dir(env, puid, pgid)
     try:
-        os.setgroups([gid])
+        os.setgroups([pgid])
     except OSError:
-        os.setgroups([])
-    os.setgid(gid)
-    os.setuid(puid)
+        try:
+            os.setgroups([])
+        except OSError:
+            pass  # no CAP_SETGID; the setgid below reports it
+    try:
+        os.setgid(pgid)
+        os.setuid(puid)
+    except OSError as e:
+        sys.exit(f"cannot drop to uid {puid} gid {pgid} ({e}): give the container CAP_SETUID, CAP_SETGID and CAP_CHOWN "
+                 f"(compose cap_add: [SETUID, SETGID, CHOWN]), or set PUID=0 PGID=0 to run as root")
     try:
         os.setuid(0)
     except OSError:
         pass  # good: uid 0 cannot be regained
     else:
         sys.exit("failed to drop privileges: uid 0 can still be regained")
-    log.info("dropped privileges to uid %s gid %s", puid, gid)
+    log.info("dropped privileges to uid %s gid %s", puid, pgid)
 
 
 def main(env):

@@ -13,18 +13,17 @@
 # after the uid and `z` are right, check for an SELinux or fapolicyd denial: `ausearch -m AVC -ts recent`, and add
 # the mount to fapolicyd's allow rules if that daemon blocks the reader the registry's own policy allows.
 # Give the directories to the UI uid, which the registry in compose.yml shares: chown -R 65534:65534 /data/certs /data/keys
-# The UI runs as uid 65534. If your registry runs as another uid and the UI reads its storage mount, match that uid:
-# either set `user: "<uid>:<gid>"` here (and chown the mounted dirs and /state to it), or start the UI as root with
-# `user: "0:0"` and set PUID/PGID below; the UI then chowns /state and drops to PUID:PGID before it reads a key or binds.
+# The UI runs as uid 65534 by default; set PUID/PGID to change it (no `user:` line needed). To read a registry storage
+# mount owned by another uid, set PUID/PGID to it; for one only root can read (for example /data/registry/data, root:root,
+# 0750), set PUID=0 PGID=0, or set PGID to the directory's group when its group bits allow read. See README.
 services:
   registry-lite-ui:
     image: ${UI_IMAGE:-ghcr.io/newen-systems/registry-lite-ui:latest}
-    # user: "0:0"   # start as root ONLY to let the UI chown /state and drop to PUID:PGID; omit to stay uid 65534
     ports: ["${UI_BIND:-127.0.0.1}:${UI_PORT:-8080}:8080"]
     environment:
       REGISTRY_URL: ${REGISTRY_URL:?set REGISTRY_URL}
-      # PUID: "1000"   # with user: "0:0", run as this uid (PUID/PGID win over UID/GID)
-      # PGID: "1000"
+      # PUID: "0"    # and PGID: "0" to run as root, or set both to the storage dir's uid/gid
+      # PGID: "0"
       REGISTRY_CA_FILE: "${REGISTRY_CA_FILE:-}"
       UI_TLS_CERT: "${UI_TLS_CERT:-}"
       UI_TLS_KEY: "${UI_TLS_KEY:-}"
@@ -41,7 +40,7 @@ services:
       UI_POLL_MIN: "${UI_POLL_MIN:-10}"
       UI_USAGE_INTERVAL: "${UI_USAGE_INTERVAL:-3600}"
       UI_BIN_DAYS: "${UI_BIN_DAYS:-7}"
-      UI_STATE_DIR: /state
+      UI_STATE_DIR: /state/data  # a sub-path the UI creates and owns, so a root-owned fresh volume still persists history
       UI_MAX_EVENTS: "${UI_MAX_EVENTS:-1000}"
     volumes:
       - ui-state:/state
@@ -57,6 +56,7 @@ services:
       start_period: 10s
     read_only: true
     cap_drop: [ALL]
+    cap_add: [CHOWN, SETGID, SETUID]  # so the root-started image can create UI_STATE_DIR and drop to PUID:PGID, then it holds none
     security_opt: ["no-new-privileges:true"]
     restart: unless-stopped
 
