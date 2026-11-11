@@ -4,6 +4,13 @@ registry-lite-ui is a web UI for a plain `registry:2` that browses, copies, move
 
 `podman-compose up -d` with `compose.yml` (registry and UI), or `podman-compose -f compose.ui.yml up -d` with `REGISTRY_URL` set for a registry that already runs. `docker compose` works the same way. Pin `UI_IMAGE` to a version or a digest in your `.env`.
 
+## Changes in 0.3.16
+
+### Bug Fixes
+
+- Move to bin (or Delete) from a repository's Storage tab now shows the results dialog and updates the Bin count, as the Tags view does. It used to fail after the delete went through, on the Tags view's selection, which that tab never opens, so it showed nothing and left the selection and the Bin count stale
+- A delete, copy or move shows what it is doing (for example "Moving 3 tags to the Bin...") until it finishes or fails, instead of nothing. The banner is now a live region, so screen readers announce it
+
 ## Changes in 0.3.15
 
 ### New Features

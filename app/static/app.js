@@ -156,9 +156,11 @@ function ask(title, lines, fields, danger, block) {
   });
 }
 
-async function run(job, done) {
-  try { banner(""); await job(); await done(); } catch (e) { banner(e.message, true); }
+// busy: shown while the job runs, so a slow delete or copy does not look like nothing happened.
+async function run(job, done, busy) {
+  try { banner(busy || ""); await job(); banner(""); await done(); } catch (e) { banner(e.message, true); }
 }
+const goneVerb = (what) => (cfg.binDays ? `Moving ${what} to the Bin...` : `Deleting ${what}...`);
 
 // A list that shows pageSize rows and a button for more.
 function paged(rows, headers) {
@@ -1209,14 +1211,15 @@ async function deleteManifest(repo, ref, digest, after) {
   try { m = await getManifest(repo, ref, digest, true); } catch (e) { banner(e.message, true); return; }
   const info = await parentInfo(repo, digest);
   const v = await confirmDelete({ repo, ref, digest, m, info, block: blockText(info) });
-  if (v) await run(() => api("/api/delete", { repo, digest, children: v.children }), async () => { await touch(repo); await (after || (() => { location.hash = "#/repo/" + repo; }))(); });
+  if (v) await run(() => api("/api/delete", { repo, digest, children: v.children }), async () => { await touch(repo); await (after || (() => { location.hash = "#/repo/" + repo; }))(); }, goneVerb(`${repo}:${ref}`));
 }
 function actions(repo, ref, digest) {
   const copy = (move) => async () => {
     let m;
     try { m = await getManifest(repo, ref, digest, move); } catch (e) { banner(e.message, true); return; } // a move needs the authoritative tag list
     const v = await transfer({ move, repo, ref, digest, m, sharing: move ? m.tags : [], block: move ? blockText(await parentInfo(repo, digest)) : "" });
-    if (v) await run(() => api(move ? "/api/move" : "/api/copy", { src: repo, srcRef: ref, dst: v.dst, dstRef: v.dstRef }), async () => { await touch(repo, v.dst); location.hash = `#/repo/${v.dst}:${v.dstRef}`; });
+    if (v) await run(() => api(move ? "/api/move" : "/api/copy", { src: repo, srcRef: ref, dst: v.dst, dstRef: v.dstRef }), async () => { await touch(repo, v.dst); location.hash = `#/repo/${v.dst}:${v.dstRef}`; },
+      `${move ? "Moving" : "Copying"} ${repo}:${ref} to ${v.dst}:${v.dstRef}...`);
   };
   const b = (text, fn, cls) => el("button", { textContent: text, className: cls || "", onclick: fn });
   return el("div", { className: "bar" }, ...(!canWrite() ? [] : [b("Copy to...", copy(false)), b("Move to...", copy(true)), b("Delete", () => deleteManifest(repo, ref, digest), "danger")]));
@@ -2096,11 +2099,12 @@ async function deleteTags(n, picked) {
   if (!v) return;
   let results;
   try {
-    banner("");
+    banner(goneVerb(plural(picked.length, "tag")));
     results = (await api("/api/delete-tags", { repo: n.path, tags: picked.map((t) => t.tag), children: v.children })).results;
+    banner("");
   } catch (e) { banner(e.message, true); return; }
-  const st = stateOf("tags:" + n.path);
-  for (const r of results) if (r.status !== "failed") st.picked.delete(r.tag); // a failed tag stays picked, to retry or look at
+  // Both the Tags and the Storage tab pick tags; a failed tag stays picked in each, to retry or look at
+  for (const id of ["tags:", "rstor:"]) for (const r of results) if (r.status !== "failed") stateOf(id + n.path).picked?.delete(r.tag);
   await touch(n.path).catch(() => { /* the next sync shows it */ });
   await deleteResults(n.path, results, "tag");
   await renderPane();

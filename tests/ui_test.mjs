@@ -4,10 +4,12 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 const src = readFileSync(new URL("../app/static/app.js", import.meta.url), "utf8");
-function load(name) { // a top-level function declaration, up to its closing brace at the start of a line
-  const start = src.indexOf(`\nfunction ${name}(`);
+// A top-level function declaration (async too), up to its closing brace at the start of a line. env: the globals it calls, as stubs.
+function load(name, env = {}) {
+  let start = src.indexOf(`\nfunction ${name}(`);
+  if (start < 0) start = src.indexOf(`\nasync function ${name}(`);
   assert.ok(start >= 0, `function ${name} not found in app.js`);
-  return new Function(`${src.slice(start, src.indexOf("\n}\n", start) + 2)}; return ${name};`)();
+  return new Function(...Object.keys(env), `${src.slice(start, src.indexOf("\n}\n", start) + 2)}; return ${name};`)(...Object.values(env));
 }
 
 test("tags on one digest are marked wherever they sit in the list", () => {
@@ -193,3 +195,27 @@ test("the summary line and the tree give the same figure for a folder, under Tot
   assert.equal(mapKids(org, "total").length, 2); // the shared block is not drawn under Total
 });
 
+
+test("a slow action shows its busy text until it ends, then clears it or shows the error", async () => {
+  const seen = [], banner = (t, err) => seen.push(err ? `ERR ${t}` : t);
+  const run = load("run", { banner });
+  await run(async () => seen.push("job"), async () => seen.push("done"), "Deleting 3 tags...");
+  assert.deepEqual(seen, ["Deleting 3 tags...", "job", "", "done"]);
+  seen.length = 0;
+  await run(async () => { throw new Error("registry said 500"); }, async () => seen.push("done"), "Deleting 3 tags...");
+  assert.deepEqual(seen, ["Deleting 3 tags...", "ERR registry said 500"]);
+});
+
+test("moving tags to the Bin from the Storage tab clears that tab's selection and shows the results", async () => {
+  const states = new Map([["rstor:demo/app", { picked: new Set(["v1", "v2", "v3"]) }]]); // the Tags view was never opened
+  const stateOf = (id) => { if (!states.has(id)) states.set(id, {}); return states.get(id); };
+  const calls = [];
+  const deleteTags = load("deleteTags", {
+    confirmDeleteTags: async () => ({ children: false }), stateOf, banner: (t) => calls.push(`banner:${t}`), goneVerb: (w) => `Moving ${w} to the Bin...`,
+    plural: (n, w) => `${n} ${w}s`, api: async () => ({ results: [{ tag: "v1", status: "deleted" }, { tag: "v2", status: "deleted" }, { tag: "v3", status: "failed" }] }),
+    touch: async () => calls.push("touch"), deleteResults: async () => calls.push("results"), renderPane: async () => calls.push("render"), $: () => ({ querySelector: () => null }),
+  });
+  await deleteTags({ path: "demo/app" }, ["v1", "v2", "v3"].map((tag) => ({ tag })));
+  assert.deepEqual([...states.get("rstor:demo/app").picked], ["v3"]); // the failed one stays picked
+  assert.deepEqual(calls, ["banner:Moving 3 tags to the Bin...", "banner:", "touch", "results", "render"]); // touch refreshes the Bin count
+});
