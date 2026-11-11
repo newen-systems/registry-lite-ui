@@ -2398,5 +2398,73 @@ class UsageSubrepos(unittest.TestCase):
         self.assertTrue(strip["one_repo"])
 
 
+class DropPrivileges(unittest.TestCase):
+    """server.drop_privileges: os calls are mocked, so the test asserts the drop sequence, not the actual uid change."""
+    def _run(self, env, uid, setuid_side, isdir=False, listdir=()):
+        calls = []
+        def rec(name):
+            def f(*a):
+                calls.append((name, *a))
+                if name == "setuid":
+                    return setuid_side(a[0])
+            return f
+        with unittest.mock.patch.multiple(S.os, getuid=lambda: uid, setuid=rec("setuid"), setgid=rec("setgid"),
+                                          setgroups=rec("setgroups"), chown=rec("chown"), listdir=lambda p: list(listdir)), \
+             unittest.mock.patch.object(S.os.path, "isdir", lambda p: isdir):
+            S.drop_privileges(env)
+        return calls
+
+    @staticmethod
+    def _block_regain(u):
+        if u == 0:
+            raise OSError(1, "Operation not permitted")
+
+    def test_root_with_puid_drops_and_verifies(self):
+        calls = self._run({"PUID": "1000", "PGID": "1000"}, 0, self._block_regain)
+        self.assertIn(("setgroups", [1000]), calls)
+        self.assertIn(("setgid", 1000), calls)
+        self.assertEqual([c for c in calls if c[0] == "setuid"], [("setuid", 1000), ("setuid", 0)])
+        # setgid must come before the uid drops, or it would be denied
+        self.assertLess(calls.index(("setgid", 1000)), calls.index(("setuid", 1000)))
+
+    def test_puid_pgid_win_over_uid_gid(self):
+        calls = self._run({"PUID": "1000", "UID": "5", "PGID": "1000", "GID": "9"}, 0, self._block_regain)
+        self.assertEqual([c for c in calls if c[0] == "setuid"][0], ("setuid", 1000))
+        self.assertEqual([c for c in calls if c[0] == "setgid"][0], ("setgid", 1000))
+
+    def test_uid_gid_aliases_used_when_puid_pgid_absent(self):
+        calls = self._run({"UID": "1000", "GID": "1000"}, 0, self._block_regain)
+        self.assertEqual([c for c in calls if c[0] == "setuid"][0], ("setuid", 1000))
+        self.assertEqual([c for c in calls if c[0] == "setgid"][0], ("setgid", 1000))
+
+    def test_gid_defaults_to_puid_when_no_group_given(self):
+        calls = self._run({"PUID": "1000"}, 0, self._block_regain)
+        self.assertEqual([c for c in calls if c[0] == "setgid"][0], ("setgid", 1000))
+
+    def test_state_dir_chowned_before_drop(self):
+        calls = self._run({"PUID": "1000", "PGID": "1000", "UI_STATE_DIR": "/state"}, 0, self._block_regain,
+                          isdir=True, listdir=["state.json"])
+        self.assertIn(("chown", "/state", 1000, 1000), calls)
+        self.assertIn(("chown", "/state/state.json", 1000, 1000), calls)
+        self.assertLess(calls.index(("chown", "/state", 1000, 1000)), calls.index(("setuid", 1000)))
+
+    def test_nonroot_matching_puid_is_a_noop(self):
+        self.assertEqual(self._run({"PUID": "1000"}, 1000, self._block_regain), [])
+
+    def test_nonroot_other_puid_warns_but_does_not_setuid(self):
+        self.assertEqual(self._run({"PUID": "1000"}, 1001, self._block_regain), [])
+
+    def test_root_without_puid_is_a_noop(self):
+        self.assertEqual(self._run({}, 0, self._block_regain), [])
+
+    def test_noninteger_puid_exits(self):
+        with self.assertRaises(SystemExit):
+            self._run({"PUID": "notanint"}, 0, self._block_regain)
+
+    def test_verify_failure_exits(self):
+        with self.assertRaises(SystemExit):  # setuid(0) does not raise, so uid 0 can be regained
+            self._run({"PUID": "1000", "PGID": "1000"}, 0, lambda u: None)
+
+
 if __name__ == "__main__":
     unittest.main()

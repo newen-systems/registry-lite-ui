@@ -31,6 +31,7 @@ Set on the `registry-lite-ui` service. The full set is `Config` in `app/server.p
 | Optional | `UI_ALLOWED_HOSTS` | compose: `localhost,127.0.0.1,[::1]` | `Host` allowlist against DNS rebinding. Set it to the name users type. |
 | Optional | `UI_BIND`, `UI_PORT`, `REGISTRY_PORT` | `127.0.0.1`, `8080`, `5000` | Host publish address and ports. The UI is loopback-only until `UI_BIND` is set. |
 | Optional | `UI_READONLY` | `false` | Hides and refuses copy, move and delete. |
+| Optional | `PUID`/`UID`, `PGID`/`GID` | image `65534` | Run the UI as this uid and gid. Start the container as root (`user: "0:0"`); the UI chowns `UI_STATE_DIR` then drops to it, before reading any key or secret or binding. `PUID`/`PGID` win over `UID`/`GID`; a missing group defaults to the uid. Lets the UI match a registry that runs as another uid without staying root. Non-integer values fail at start. |
 | Optional | `UI_ENVIRONMENTS` | `dev,test,uat,staging,prod` | Stage prefixes, in order, offered as promote shortcuts in Copy to and Move to. |
 | Optional | `UI_REGISTRY_STORAGE` | empty | Host path or volume of the registry data, shown in the garbage collection commands in Help. |
 | Optional | `UI_REGISTRY_STORAGE_MOUNT` | compose: `/registry` | Path inside the UI container where the registry's filesystem storage (its `/var/lib/registry`) is mounted read-only. Adds when each layer was pushed and last used, each tag's history and the on-disk total. Empty, or not a directory: both are left out. |
@@ -109,7 +110,7 @@ WantedBy=multi-user.target
 | Reference | `ghcr.io/newen-systems/registry-lite-ui` |
 | Base | `cgr.dev/chainguard/python:latest` (Wolfi, current Python 3, no shell or package manager), pinned by digest in `Containerfile`, stdlib only. The build stage uses `:latest-dev` only to set file modes. |
 | Platforms | linux/amd64, linux/arm64 |
-| User | uid and gid 65534, read-only root filesystem, no capabilities. The image has no shell: run checks with `python -c`, as the HEALTHCHECK does. |
+| User | uid and gid 65534, read-only root filesystem, no capabilities. The image has no shell: run checks with `python -c`, as the HEALTHCHECK does. To run as another uid, either set `user: "UID:GID"` in compose (mount `/state` so that uid can write it), or start as root (`user: "0:0"`) with `PUID`/`PGID` and the UI drops to that uid itself after chowning `/state`. |
 
 ## Tags
 
