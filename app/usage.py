@@ -83,9 +83,11 @@ def disk_total(mount, keep=()):
 
 
 def revisions(mount):
-    """{digest: repo} of every manifest the storage still holds, tagged or not. Garbage collection without --delete-untagged
-    keeps every blob these use. A manifest deleted over the API leaves its revision directory behind without the link file."""
-    out = {}
+    """({repo: {digest: seconds}}, {repo: set of tagged digests}): every manifest the storage still holds, tagged or not, with its
+    link file's time (the push), and the digests its tags point at now, read from the same storage so the two agree. Garbage
+    collection without --delete-untagged keeps every blob these use. A manifest deleted over the API leaves its revision directory
+    behind without the link file."""
+    out, tagged = {}, {}
     root = os.path.join(mount, R.STORAGE, "repositories")
     for here, dirs, _ in os.walk(root):
         if "_manifests" in dirs:
@@ -101,9 +103,51 @@ def revisions(mount):
                     continue
                 for hexed in hexes:
                     d = f"{alg}:{hexed}"
-                    if R.DIGEST_RE.fullmatch(d) and os.path.isfile(os.path.join(rev, alg, hexed, "link")):
-                        out.setdefault(d, os.path.relpath(here, root))
+                    try:
+                        t = os.stat(os.path.join(rev, alg, hexed, "link")).st_mtime
+                    except OSError:
+                        continue
+                    if R.DIGEST_RE.fullmatch(d):
+                        out.setdefault(os.path.relpath(here, root), {})[d] = int(t)
+            tags = os.path.join(here, "_manifests", "tags")
+            try:
+                names = os.listdir(tags)
+            except OSError:
+                names = []
+            for name in names:
+                try:
+                    with open(os.path.join(tags, name, "current", "link")) as f:
+                        tagged.setdefault(os.path.relpath(here, root), set()).add(f.read(200).strip())
+                except OSError:
+                    pass
         dirs[:] = [d for d in dirs if not d.startswith("_")]  # _manifests, _layers, _uploads: a repository name never starts with _
+    return out, tagged
+
+
+def untagged_rows(revs, blobs, tagged):
+    """{repo: [row]} of the manifests in each repository that no tag points at and no index there lists as a platform: older
+    images a tag was pushed over, which garbage collection keeps until they are deleted by digest. revs: revisions(); blobs:
+    {digest: {blob: size}} from blobs_of, index children included; tagged: {repo: set of tagged digests}. frees: the bytes
+    garbage collection frees once the manifest and its platforms go, counted against every manifest in the storage."""
+    every = {d for ds in revs.values() for d in ds}
+    holders = {}
+    for d in every:
+        for b in blobs.get(d, {}):
+            holders.setdefault(b, set()).add(d)
+    out = {}
+    for repo, ds in revs.items():
+        kids = {d: {k for k in blobs.get(d, {}) if k != d and k in every} for d in ds}
+        listed = set().union(*kids.values()) if kids else set()  # platforms of an index here: deleted with it, never alone
+        rows = []
+        for d in sorted(ds):
+            if d in tagged.get(repo, ()) or d in listed:
+                continue
+            group = {d} | kids[d]
+            mine = blobs.get(d, {})
+            rows.append({"digest": d, "size": sum(mine.values()), "frees": sum(n for b, n in mine.items() if holders[b] <= group),
+                         "pushed": ds[d], "index": bool(kids[d])})
+        if rows:
+            out[repo] = rows
     return out
 
 
@@ -391,6 +435,7 @@ class Usage(threading.Thread):
         self.stop, self.latest, self.lock = threading.Event(), None, threading.Lock()
         self.cache = {}  # digest -> (blobs, layers); a digest names its content, so it never changes
         self.throttle = None
+        self.changes = 0  # bumped by wake()
 
     def reader(self, repo):
         def read(digest):
@@ -413,10 +458,15 @@ class Usage(threading.Thread):
             if digest not in cache:
                 cache[digest] = self.cache.get(digest) or blobs_of(self.reader(ref.rpartition(":")[0]), digest)
         held = {}  # every blob a manifest still in the storage uses, tagged or not: what garbage collection keeps
-        for digest, repo in (revisions(self.mount) if self.mount else {}).items():
-            if digest not in cache:
-                cache[digest] = self.cache.get(digest) or blobs_of(self.reader(repo), digest)
-            held.update(cache[digest][0])
+        revs, tagged = revisions(self.mount) if self.mount else ({}, {})
+        for repo, ds in revs.items():
+            for digest in ds:
+                if digest not in cache:
+                    cache[digest] = self.cache.get(digest) or blobs_of(self.reader(repo), digest)
+                held.update(cache[digest][0])
+        for ref, digest in tags.items():  # and what the poller knows, in case a tag link could not be read
+            tagged.setdefault(ref.rpartition(":")[0], set()).add(digest)
+        untagged = untagged_rows(revs, {d: v[0] for d, v in cache.items()}, tagged)
         self.cache = {d: v for d, v in cache.items() if v[0]}  # digests no manifest uses any more are dropped; a failed read is tried again
         cache = {d: cache[d] for d in set(tags.values())}  # the figures below are for tags
         ages = {}
@@ -441,7 +491,8 @@ class Usage(threading.Thread):
         recorded = any(a[1] == "atime" for a in ages.values())
         result.update({"updated": int(now), "mount": bool(self.mount), "disk": disk, "files": files, "tags": len(tags), "blobs": len({b for v, _ in cache.values() for b in v}),
                        "unread": {"count": len(unread), "first": unread[:5]}, "atime": recorded if ages else None, "stale": stale_summary(result, by_digest, now), "by_digest": by_digest,
-                       "gcFrees": loose, "untagged": sum(n for b, n in held.items() if b not in result["sizes"]) if self.mount else None})
+                       "gcFrees": loose, "untagged": sum(n for b, n in held.items() if b not in result["sizes"]) if self.mount else None,
+                       "untagged_rows": untagged})
         log.info("usage scan: %d tags, %d manifests read, %d unread, %d layer ages (%d atime), disk %s bytes in %s files",
                  len(tags), len(by_digest) - sum(1 for b in by_digest.values() if not b), len(unread), len(ages),
                  sum(1 for a in ages.values() if a[1] == "atime"), disk, files)
@@ -455,13 +506,17 @@ class Usage(threading.Thread):
         with self.lock:
             return self.latest
 
+    def wake(self):
+        """A change no tag shows (an untagged image deleted): rescan as after a tag change."""
+        self.changes += 1
+
     def run(self):
         last_scan = last_point = seen = None
         while not self.stop.is_set():
             if self.state.baselined:
                 now = self.clock()
-                if scan_due(now, last_scan, self.interval, self.state.seq, seen):
-                    seen = self.state.seq  # read first: a change during the scan is caught by the next one
+                if scan_due(now, last_scan, self.interval, (self.state.seq, self.changes), seen):
+                    seen = (self.state.seq, self.changes)  # read first: a change during the scan is caught by the next one
                     record = last_point is None or now - last_point >= self.interval * 0.9  # a point of the history at most once an interval, though a change rescans sooner
                     try:
                         self.scan(record=record)

@@ -4,6 +4,19 @@ registry-lite-ui is a web UI for a plain `registry:2` that browses, copies, move
 
 `podman-compose up -d` with `compose.yml` (registry and UI), or `podman-compose -f compose.ui.yml up -d` with `REGISTRY_URL` set for a registry that already runs. `docker compose` works the same way. Pin `UI_IMAGE` to a version or a digest in your `.env`.
 
+## Changes in 0.3.17
+
+### New Features
+
+- A repository's Storage tab lists its **Untagged images**: older images a tag was pushed over (a CI job re-pushing `latest`, for example). Their manifests stay in the registry with no tag, and garbage collection keeps every layer they use, so on a busy registry they can hold most of the disk while garbage collection frees nothing. Each row has the digest, what deleting it frees, its size and when it was pushed, with checkboxes, shift-click range select and Move selected to bin (or Delete selected). The list comes from the storage scan and needs `UI_REGISTRY_STORAGE_MOUNT`
+- Safe by construction: a platform image that an index in the repository lists is never offered on its own, an untagged index goes with the platforms nothing tagged keeps, and the server checks each digest again before the DELETE and keeps one that a tag points at now or that the latest scan did not list. This is the registry API delete by digest, not `--delete-untagged`, which breaks multi-arch images in registry 2.8
+- Untagged images go to the Bin like a tag does, shown as `repo@digest (untagged)`, and Restore pushes the manifest back by digest
+- The storage scan reruns about a minute after untagged images are deleted, as it does after a tag change, so the cards and the list catch up
+
+### Bug Fixes
+
+- The untagged figures take the tags from the registry storage itself as well as from the poller, so a tag pushed since the last poll is never counted, or listed, as untagged
+
 ## Changes in 0.3.16
 
 ### New Features

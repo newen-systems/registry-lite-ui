@@ -54,7 +54,7 @@ def manifests_shape(m):
 def entry_shape(e, stored):
     """The fields an entry must have to be restored, checked when the state file is read back. stored: the manifests kept beside the entries."""
     return (isinstance(e, dict) and isinstance(e.get("id"), str) and isinstance(e.get("repo"), str) and R.valid_repo(e["repo"])
-            and isinstance(e.get("tag"), str) and R.TAG_RE.fullmatch(e["tag"]) and isinstance(e.get("type"), str) and isinstance(e.get("digest"), str)
+            and isinstance(e.get("tag"), str) and (e["tag"] == "" or R.TAG_RE.fullmatch(e["tag"])) and isinstance(e.get("type"), str) and isinstance(e.get("digest"), str)
             and R.DIGEST_RE.fullmatch(e["digest"]) and isinstance(e.get("t"), (int, float)) and isinstance(e.get("size"), int)
             and isinstance(e.get("kids"), list) and all(isinstance(k, str) for k in e["kids"]) and all(d in stored for d in [e["digest"], *e["kids"]]))
 
@@ -89,16 +89,18 @@ class Bin:
         state.bin_days = days
 
     def record(self, c, repo, digest, data, mtype, tags):
-        """Store what a delete of digest is about to remove, one entry per tag on it. Returns the ids. Returns [] and stores nothing for
-        an untagged digest, and for an index with a child manifest that cannot be read or kept (it could not be restored)."""
+        """Store what a delete of digest is about to remove, one entry per tag on it, or one with tag "" for an untagged digest
+        (restored by digest). Returns the ids. Returns [] and stores nothing for an index with a child manifest that cannot be read
+        or kept (it could not be restored)."""
         def read(d):
             if d == digest:
                 return data, mtype
             body, kind, _ = c.manifest(repo, d)
             return body, kind
         stored = collect(read, digest)
-        if digest not in stored or not tags:
+        if digest not in stored:
             return []
+        tags = tags or [""]
         for body, kind in stored.values():
             if kind in R.INDEX_TYPES and not all(k in stored for k in R.children(body, kind)):
                 return []
@@ -152,12 +154,17 @@ class Bin:
         if missing:
             more = f" and {len(missing) - 1} more" if len(missing) > 1 else ""
             raise R.RegistryError(409, f"cannot restore: garbage collection already removed {plural(len(missing), 'blob')} of this image ({missing[0][:19]}{more}).")
-        self.check_tag(c, repo, tag, digest)
+        if tag:
+            self.check_tag(c, repo, tag, digest)
         for d, m in manifests.items():
             if d != digest:
                 c.call("PUT", f"/v2/{repo}/manifests/{d}", {"Content-Type": m["type"]}, decode(m["b64"]), ok=(201,))
-        self.check_tag(c, repo, tag, digest)  # again, closest to the write: a push in between is not overwritten (the registry has no conditional PUT, so a gap remains)
         root = manifests[digest]
+        if not tag:  # an untagged image goes back by digest, as it was
+            c.call("PUT", f"/v2/{repo}/manifests/{digest}", {"Content-Type": root["type"]}, decode(root["b64"]), ok=(201,))
+            self.state.bin_remove({id_})
+            return {"repo": repo, "tag": "", "digest": digest}
+        self.check_tag(c, repo, tag, digest)  # again, closest to the write: a push in between is not overwritten (the registry has no conditional PUT, so a gap remains)
         c.call("PUT", f"/v2/{repo}/manifests/{tag}", {"Content-Type": root["type"]}, decode(root["b64"]), ok=(201,))
         self.state.mark_restored(f"{repo}:{tag}", digest, e.get("changed"), e.get("first"))
         self.state.bin_remove({id_})
