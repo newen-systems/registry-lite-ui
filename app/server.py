@@ -308,6 +308,15 @@ def routes(cfg):
             cfg.poller.wake()
         return out
 
+    def delete_untagged(b):  # older images a tag was pushed over, from the latest scan's list only
+        repo = R.check_repo(str(b["repo"]))
+        snap = cfg.usage.snapshot() if cfg.usage else None
+        listed = {r["digest"] for r in (snap or {}).get("untagged_rows", {}).get(repo, [])}
+        out = {"results": R.delete_untagged(c, repo, b["digests"], listed, cfg.bin)}
+        if cfg.usage:
+            cfg.usage.wake()
+        return out
+
     def delete_enabled():
         """None while the registry is unreachable, so a PyPI-only UI still gets its config, PyPI delete included."""
         try:
@@ -339,7 +348,7 @@ def routes(cfg):
                     links = [h["time"] for h in R.tag_history(cfg.storage_mount, repo, tag) if h["digest"] == v["digest"]] if cfg.storage_mount else []
                     pushed[tag] = links[0] if links else (int(v["changed"]) or None)  # 0: not known
             pushed_cache[repo] = pushed
-        return {"updated": snap["updated"], **U.repo_detail(snap, snap["by_digest"], repo, pushed_cache[repo])}
+        return {"updated": snap["updated"], **U.repo_detail(snap, snap["by_digest"], repo, pushed_cache[repo]), "untagged": snap.get("untagged_rows", {}).get(repo, [])}
 
     def disk(q):  # the filesystem of the registry storage, cheap enough to ask at every sync
         return {"fs": U.fs_usage(cfg.storage_mount) if cfg.storage_mount else None}
@@ -387,6 +396,7 @@ def routes(cfg):
         "/api/move": woken(lambda *a: {"deleted": R.move(c, *a, bin=cfg.bin)}),
         "/api/delete": delete,
         "/api/delete-tags": delete_tags,
+        "/api/delete-untagged": delete_untagged,
         "/api/bin/restore": in_bin(lambda bin_, b: bin_.restore(c, str(b["id"]))),
         "/api/bin/delete": in_bin(lambda bin_, b: bin_.purge(str(b["id"])) or {"deleted": 1}),
         "/api/bin/empty": in_bin(lambda bin_, b: {"deleted": bin_.empty()}),
@@ -537,7 +547,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(401, {"error": "log in to make changes"})
         if not csrf_ok(self.cfg, self.headers):
             return self.reply(403, {"error": "CSRF check failed"})
-        self.reply(200, self.post[path](self.read_json(MAX_BATCH_BODY if path in ("/api/delete-tags", "/api/pypi/delete") else MAX_BODY)))
+        self.reply(200, self.post[path](self.read_json(MAX_BATCH_BODY if path in ("/api/delete-tags", "/api/delete-untagged", "/api/pypi/delete") else MAX_BODY)))
 
     def pypi_locked(self):
         """PyPI data needs a login: an auth proxy is in front, the packages are not public, and this request has no user."""

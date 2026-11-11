@@ -335,10 +335,11 @@ def refuse_parents(parents, digest):
                               "deleting it would break that index. Delete or retag the index first.")[:MAX_MESSAGE])
 
 
-def delete(c, repo, digest, with_children=False, bin=None):
+def delete(c, repo, digest, with_children=False, bin=None, untagged=False):
     """Delete a manifest by digest. Refused (409) while a tagged index uses it as a child. With with_children, also
     delete index children no other tagged manifest in the repo uses. A bin (see bin.py) is told what goes, after the checks
-    and before the first DELETE, so the manifest can be put back; it forgets the record if the first DELETE is refused."""
+    and before the first DELETE, so the manifest can be put back; it forgets the record if the first DELETE is refused.
+    untagged: refused (409) when a tag points at the digest, for the delete of an image the storage scan found untagged."""
     check_repo(repo)
     if not DIGEST_RE.fullmatch(digest):
         raise RegistryError(400, "delete takes a digest")
@@ -349,6 +350,8 @@ def delete(c, repo, digest, with_children=False, bin=None):
     same = []
     parents, kept = survey(c, repo, digest, same)  # one pass, right before the DELETE calls; a push after it can still race
     refuse_parents(parents, digest)
+    if untagged and same:
+        raise RegistryError(409, f"not untagged any more: {', '.join(same[:5])} now point{'s' if len(same) == 1 else ''} at it")
     gone = [digest, *sorted(orphans - kept)]
     record = bin.record(c, repo, digest, data, mtype, same) if bin else None
     removed = 0
@@ -364,6 +367,29 @@ def delete(c, repo, digest, with_children=False, bin=None):
 
 
 MAX_BATCH = 100  # tags one delete-tags call takes; each runs the checks of a single delete
+
+
+def delete_untagged(c, repo, digests, listed, bin=None):
+    """Delete manifests the storage scan found untagged, by digest, with their platforms that nothing tagged keeps. Each runs the
+    checks of a single delete (ponytail: one tag walk per digest, as delete-tags does; a shared walk if big repositories make it slow),
+    and is refused when a tag points at it again. listed: the digests of the latest scan's list, the only ones taken.
+    Returns one result per digest: deleted, skipped or failed with the reason."""
+    check_repo(repo)
+    if not isinstance(digests, list) or not 0 < len(digests) <= MAX_BATCH or not all(isinstance(d, str) and DIGEST_RE.fullmatch(d) for d in digests):
+        raise RegistryError(400, f"digests must be a list of 1 to {MAX_BATCH} digests")
+    if not c.delete_enabled():
+        raise RegistryError(405, DELETE_OFF)
+    out = []
+    for d in dict.fromkeys(digests):
+        row = {"tag": d[:19], "digest": d}
+        if d not in listed:
+            out.append({**row, "status": "skipped", "detail": "not in the latest scan's untagged list"})
+            continue
+        try:
+            out.append({**row, "status": "deleted", "deleted": delete(c, repo, d, True, bin, untagged=True)})
+        except RegistryError as e:
+            out.append({**row, "status": "skipped" if e.status == 404 else "failed", "error": e.message})
+    return out
 
 
 def delete_tags(c, repo, tags, with_children=False, bin=None):

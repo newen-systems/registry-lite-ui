@@ -1883,7 +1883,13 @@ class UsageScan(unittest.TestCase):
             os.makedirs(d)
             if link:
                 open(os.path.join(d, "link"), "w").write(R.hashed(body, "sha256:"))
-        self.assertEqual(U.revisions(root), {R.hashed(tagged, "sha256:"): "a/x", R.hashed(untagged, "sha256:"): "a/x"})
+                os.utime(os.path.join(d, "link"), (5000, 5000))
+        self.assertEqual(U.revisions(root), ({"a/x": {R.hashed(tagged, "sha256:"): 5000, R.hashed(untagged, "sha256:"): 5000}}, {}))
+        now = os.path.join(root, R.STORAGE, "repositories", "a", "x", "_manifests", "tags", "new", "current")
+        os.makedirs(now)
+        open(os.path.join(now, "link"), "w").write(R.hashed(untagged, "sha256:"))  # a tag the poller has not seen yet
+        self.assertEqual(U.revisions(root)[1], {"a/x": {R.hashed(untagged, "sha256:")}})
+        shutil.rmtree(os.path.dirname(now))
         st = P.State(clock=Clock())
         st.update({"a/x"}, {"a/x:1": R.hashed(tagged, "sha256:")})
         st.mark_baselined()
@@ -1891,6 +1897,16 @@ class UsageScan(unittest.TestCase):
         self.assertEqual(out["gcFrees"], len(deleted) + 30 + 40)  # the deleted manifest, its own layer and the loose blob
         self.assertEqual(out["untagged"], len(untagged) + 20)  # the config is shared with the tagged image, so it is not counted
         self.assertEqual((out["total"], out["tags"]), (len(tagged) + 13, 1))  # the tag figures are unchanged by untagged manifests
+        self.assertEqual(out["untagged_rows"], {"a/x": [{"digest": R.hashed(untagged, "sha256:"), "size": len(untagged) + 23, "frees": len(untagged) + 20, "pushed": 5000, "index": False}]})
+
+    def test_untagged_rows_leave_out_tagged_images_and_the_platforms_of_an_index(self):
+        revs = {"a": {D("t"): 1, D("u"): 2, D("i"): 3, D("k"): 4}, "b": {D("o"): 5}}
+        blobs = {D("t"): {D("t"): 1, D("s"): 100}, D("u"): {D("u"): 1, D("s"): 100, D("x"): 10},  # u shares s with the tagged image
+                 D("i"): {D("i"): 1, D("k"): 1, D("y"): 20}, D("k"): {D("k"): 1, D("y"): 20},  # i is an untagged index, k its platform
+                 D("o"): {D("o"): 1, D("x"): 10}}  # x is used in another repository too
+        rows = U.untagged_rows(revs, blobs, {"a": {D("t")}, "b": {D("o")}})
+        self.assertEqual(rows, {"a": [{"digest": D("i"), "size": 22, "frees": 22, "pushed": 3, "index": True},  # its platform goes with it
+                                      {"digest": D("u"), "size": 111, "frees": 1, "pushed": 2, "index": False}]})  # s and x stay for others
 
     def test_scan_without_storage_reads_over_the_api(self):
         image = b'{"config":{"digest":"%s","size":3},"layers":[]}' % D("1").encode()
@@ -2016,6 +2032,21 @@ class RecycleBin(unittest.TestCase):
         self.assertEqual((self.state.tags["a/app:1"]["changed"], self.state.tags["a/app:1"]["first"]), (1000.0, 1000.0))  # back in its place
         self.assertEqual(self.state.tags["a/app:2"]["changed"], 3000.0)
         self.assertTrue(P.well_formed(json.loads(self.state.dump())))  # a state file with a restored event reads back
+
+    def test_an_untagged_image_is_deleted_by_digest_into_the_bin_and_restored_by_digest(self):
+        old = self.c.add("a/app", image_body(D("1")), IMG, [])  # pushed over: no tag
+        out = R.delete_untagged(self.c, "a/app", [old, self.digest, D("9")], {old, self.digest}, bin=self.bin)
+        self.assertEqual([(r["digest"], r["status"]) for r in out], [(old, "deleted"), (self.digest, "failed"), (D("9"), "skipped")])
+        self.assertIn("not untagged any more: 1, latest", out[1]["error"])  # tagged since the scan: kept
+        self.assertNotIn(old, self.c.store)
+        (e,) = self.bin.list()
+        self.assertEqual((e["tag"], e["digest"]), ("", old))
+        self.bin.restore(self.c, e["id"])
+        self.assertIn(old, self.c.store)
+        self.assertEqual(self.c.puts, [("a/app", old)])  # by digest, no tag made
+        self.assertEqual(self.c.tag_map["a/app"], {"1": self.digest, "latest": self.digest})
+        with self.assertRaises(R.RegistryError):
+            R.delete_untagged(self.c, "a/app", [], set())
 
     def test_restore_checks_every_blob_and_changes_nothing_when_one_is_gone(self):
         R.delete(self.c, "a/app", self.digest, bin=self.bin)

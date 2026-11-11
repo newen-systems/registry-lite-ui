@@ -1632,7 +1632,7 @@ async function storagePane(seq) {
     // What garbage collection (without --delete-untagged) deletes: blobs no manifest still in the storage uses, the Bin's included
     card("Garbage collection frees now", u.gcFrees != null ? size(u.gcFrees) : "needs the storage mount", el("div", { className: "mut", textContent: u.gcFrees != null
       ? (cfg.binDays ? "Layers no manifest uses any more, the Bin's included: run it once the Bin is empty." : "Layers no manifest uses any more.") : "Set UI_REGISTRY_STORAGE_MOUNT." })),
-    ...(u.untagged ? [card("Kept by untagged images", size(u.untagged), el("div", { className: "mut", textContent: "Older images a tag was pushed over. Their manifests are still in the registry, so garbage collection keeps their layers." }))] : []),
+    ...(u.untagged ? [card("Kept by untagged images", size(u.untagged), el("div", { className: "mut", textContent: "Older images a tag was pushed over. Their manifests are still in the registry, so garbage collection keeps their layers. A repository's Storage tab lists them, to delete." }))] : []),
     growthCard(u.history));
   const redraw = () => keepFocus(holder, () => void body());
   const holder = el("div"), sharedBox = el("div");
@@ -1789,7 +1789,64 @@ function repoStorage(n) {
   };
   paintRows();
   return [cards, el("div", { className: "bar" }, el("label", { className: "mut" }, "Select ", choose), el("span", { className: "mut", textContent: `Sorted by ${st.sort.key === "used" ? `last ${word}, oldest first` : st.sort.key}.`
-    + (gone ? ` ${plural(gone, "tag")} deleted since the scan.` : "") + (u?.updated ? ` Scanned ${ago(u.updated)}.` : "") })), holder, sel];
+    + (gone ? ` ${plural(gone, "tag")} deleted since the scan.` : "") + (u?.updated ? ` Scanned ${ago(u.updated)}.` : "") })), holder, sel, ...untaggedSection(n, d)];
+}
+// Older images a tag was pushed over, from the latest storage scan: no tag points at them and no index here lists them as a
+// platform, so garbage collection keeps their layers until they are deleted by digest.
+function untaggedSection(n, d) {
+  const rows = (d.untagged || []).filter((r) => !storageUI.gone.has(`${n.path}@${r.digest}`));
+  if (!rows.length) return [];
+  const id = "untagged:" + n.path;
+  const pick = canWrite() ? pickBar({ id, key: (r) => r.digest, keep: (k) => rows.some((r) => r.digest === k), noun: "image", max: Infinity,
+    deleteText: cfg.binDays ? "Move selected to bin" : "Delete selected", hint: "Select untagged images to delete several at once. Shift-click selects a range.",
+    onDelete: (keys) => deleteUntagged(n, rows.filter((r) => keys.has(r.digest))) }) : null;
+  const columns = [
+    { key: "digest", label: "Digest", val: (r) => r.digest, cmp: collator.compare },
+    { key: "frees", label: "Frees", tip: "Bytes garbage collection frees once this image (and the platforms of an index) is deleted: layers no other manifest uses.", val: (r) => r.frees, cmp: numCmp },
+    { key: "size", label: "Size", val: (r) => r.size, cmp: numCmp },
+    { key: "pushed", label: "Pushed", tip: "When the registry stored this manifest.", val: (r) => r.pushed, cmp: numCmp },
+  ];
+  const row = (r) => {
+    const tr = el("tr", {}, el("td", { className: "nw" }, code(short(r.digest)), r.index ? el("span", { className: "mut", textContent: " index" }) : ""),
+      el("td", { className: "num", textContent: size(r.frees) }), el("td", { className: "mut num", textContent: size(r.size) }),
+      el("td", { className: "mut nw", title: new Date(r.pushed * 1000).toLocaleString(), textContent: ago(r.pushed) }));
+    pick?.row(tr, r);
+    return tr;
+  };
+  const list = listView({ id, items: rows, columns, defaultCmp: (a, b) => a.pushed - b.pushed, tie: (a, b) => collator.compare(a.digest, b.digest),
+    match: (r, text) => r.digest.includes(text), placeholder: "Filter untagged images", lead: pick?.head, row, onDraw: (vis) => pick?.shown(vis) });
+  const frees = rows.reduce((a, r) => a + r.frees, 0);
+  return [el("h3", { textContent: `Untagged images (${rows.length})` }),
+    el("p", { className: "mut", textContent: `Older images a tag was pushed over. No tag points at them and no index here lists them as a platform, so garbage collection keeps their layers. Deleting them frees about ${size(frees)} at the next garbage collection.` }),
+    ...(pick ? [pick.bar] : []), ...list];
+}
+// Delete untagged images by digest, in calls of at most the server's cap. The server checks each again and keeps one a tag points at now.
+async function deleteUntagged(n, picked) {
+  const frees = picked.reduce((a, r) => a + r.frees, 0);
+  const bin = cfg.binDays ? `They go to the Bin and can be restored, by digest, for ${plural(cfg.binDays, "day")}. ` : "";
+  if (!(await ask(cfg.binDays ? "Move untagged images to the Bin" : "Delete untagged images", [`${plural(picked.length, "untagged image")} from ${n.path}, by digest, each index with its platforms that nothing tagged keeps. Each is checked again first: one a tag points at now is kept.`,
+    `${bin}Garbage collection then frees about ${size(frees)}.`], [], true))) return;
+  const max = cfg.maxBatch || 100, results = [];
+  const parts = [];
+  for (let i = 0; i < picked.length; i += max) parts.push(picked.slice(i, i + max));
+  try {
+    for (const [i, part] of parts.entries()) {
+      banner(goneVerb(plural(picked.length, "untagged image")) + (parts.length > 1 ? ` (call ${i + 1} of ${parts.length})` : ""));
+      results.push(...(await api("/api/delete-untagged", { repo: n.path, digests: part.map((r) => r.digest) })).results);
+    }
+    banner("");
+  } catch (e) {
+    banner(e.message, true);
+    if (!results.length) return;
+  }
+  for (const r of results) {
+    if (r.status === "failed") continue;
+    storageUI.gone.add(`${n.path}@${r.digest}`); // the list comes from the scan, which runs again shortly
+    stateOf("untagged:" + n.path).picked?.delete(r.digest);
+  }
+  void binCount();
+  await deleteResults(n.path, results, "image");
+  await renderPane();
 }
 
 // The Storage tab of a folder: the same disk map and table as the Storage view, scoped to this folder, so browsing a folder
@@ -1834,6 +1891,7 @@ async function binPane(seq) {
   $("bin").textContent = b.entries.length ? `Bin (${b.entries.length})` : "Bin";
   const write = canWrite();
   const left = (e) => { const d = Math.max(0, Math.ceil((e.expires - Date.now() / 1000) / 86400)); return d <= 1 ? "under 1 day" : `${d} days`; };
+  const name = (e) => (e.tag ? `${e.repo}:${e.tag}` : `${e.repo}@${short(e.digest)} (untagged)`); // an untagged image is restored by digest
   const act = async (e, path, text) => { // Restore and Delete forever act on one entry
     banner("");
     try { await api(path, { id: e.id }); } catch (err) { banner(err.message, true); void renderPane(); return false; }
@@ -1842,10 +1900,10 @@ async function binPane(seq) {
   const restore = async (e) => {
     if (!(await act(e, "/api/bin/restore"))) return;
     await touch(e.repo);
-    location.hash = `#/repo/${e.repo}:${e.tag}`;
+    location.hash = e.tag ? `#/repo/${e.repo}:${e.tag}` : repoHash(e.repo);
   };
   const forget = async (e) => {
-    if (!(await ask("Delete forever", [`Remove ${e.repo}:${e.tag} from the Bin? It can no longer be restored. Disk space is freed by garbage collection.`], [], true))) return;
+    if (!(await ask("Delete forever", [`Remove ${name(e)} from the Bin? It can no longer be restored. Disk space is freed by garbage collection.`], [], true))) return;
     if (await act(e, "/api/bin/delete")) void renderPane();
   };
   // Restore or Delete forever for each picked entry, one call each, in list order. A failure is reported and the rest still go.
@@ -1853,7 +1911,7 @@ async function binPane(seq) {
     const list = b.entries.filter((e) => ids.has(e.id)), failed = [];
     for (const [i, e] of list.entries()) {
       banner(`${verb} ${i + 1} of ${list.length}...`);
-      try { await api(path, { id: e.id }); } catch (err) { failed.push(`${e.repo}:${e.tag} (${err.message})`); }
+      try { await api(path, { id: e.id }); } catch (err) { failed.push(`${name(e)} (${err.message})`); }
     }
     const done = list.length - failed.length;
     banner(failed.length ? `${done} of ${list.length} done. Failed: ${failed.join("; ")}` : "", failed.length > 0);
@@ -1873,7 +1931,7 @@ async function binPane(seq) {
   const pick = write ? pickBar({ id: "bin", key: (e) => e.id, keep: (id) => b.entries.some((e) => e.id === id), noun: "entry", nouns: "entries", deleteText: "Delete forever",
     hint: "Select entries to restore or delete several at once. Shift-click selects a range.", onDelete: forgetMany, max: Infinity, more: [["Restore selected", restoreMany]] }) : null;
   const row = (e) => {
-    const tr = el("tr", {}, el("td", {}, code(`${e.repo}:${e.tag}`)), el("td", { className: "nw" }, code(short(e.digest))), el("td", { textContent: size(e.size) }),
+    const tr = el("tr", {}, el("td", {}, code(name(e))), el("td", { className: "nw" }, code(short(e.digest))), el("td", { textContent: size(e.size) }),
       el("td", { className: "mut", title: new Date(e.t * 1000).toLocaleString(), textContent: ago(e.t) }), el("td", { className: "mut", textContent: left(e) }),
       ...(write ? [el("td", { className: "nw" }, el("button", { type: "button", textContent: "Restore", onclick: () => void restore(e) }), " ",
         el("button", { type: "button", className: "danger", textContent: "Delete forever", onclick: () => void forget(e) }))] : []));
