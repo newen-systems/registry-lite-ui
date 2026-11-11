@@ -13,12 +13,18 @@
 # after the uid and `z` are right, check for an SELinux or fapolicyd denial: `ausearch -m AVC -ts recent`, and add
 # the mount to fapolicyd's allow rules if that daemon blocks the reader the registry's own policy allows.
 # Give the directories to the UI uid, which the registry in compose.yml shares: chown -R 65534:65534 /data/certs /data/keys
+# The UI runs as uid 65534. If your registry runs as another uid and the UI reads its storage mount, match that uid:
+# either set `user: "<uid>:<gid>"` here (and chown the mounted dirs and /state to it), or start the UI as root with
+# `user: "0:0"` and set PUID/PGID below; the UI then chowns /state and drops to PUID:PGID before it reads a key or binds.
 services:
   registry-lite-ui:
     image: ${UI_IMAGE:-ghcr.io/newen-systems/registry-lite-ui:latest}
+    # user: "0:0"   # start as root ONLY to let the UI chown /state and drop to PUID:PGID; omit to stay uid 65534
     ports: ["${UI_BIND:-127.0.0.1}:${UI_PORT:-8080}:8080"]
     environment:
       REGISTRY_URL: ${REGISTRY_URL:?set REGISTRY_URL}
+      # PUID: "1000"   # with user: "0:0", run as this uid (PUID/PGID win over UID/GID)
+      # PGID: "1000"
       REGISTRY_CA_FILE: "${REGISTRY_CA_FILE:-}"
       UI_TLS_CERT: "${UI_TLS_CERT:-}"
       UI_TLS_KEY: "${UI_TLS_KEY:-}"

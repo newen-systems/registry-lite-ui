@@ -613,8 +613,59 @@ def watchdog(cfg, every=60):
             os._exit(1)
 
 
+def _int_id(env, *names):
+    """First of names set and non-empty in env, parsed as an int. Exit clearly on a non-integer. None if none set."""
+    for name in names:
+        value = env.get(name)
+        if value not in (None, ""):
+            try:
+                return int(value)
+            except ValueError:
+                sys.exit(f"{name} must be an integer, got {value!r}")
+    return None
+
+
+def drop_privileges(env):
+    """When started as root with PUID/PGID, hand the state dir to that id and drop to it for good, before anything
+    reads a secret or key or binds a socket. The image is distroless with no shell, so this is done in Python here.
+    PUID/PGID win over UID/GID. Non-root start is left as is: a matching PUID is fine, a different one is logged."""
+    puid = _int_id(env, "PUID", "UID")
+    pgid = _int_id(env, "PGID", "GID")
+    uid = os.getuid()
+    if uid != 0:
+        if puid is not None and puid != uid:
+            log.warning("PUID %s is set but the process is uid %s, not root: start the container as root (user: \"0:0\") "
+                        "to run as a different uid. Continuing as %s", puid, uid, uid)
+        return
+    if puid is None:
+        log.warning("running as root (uid 0): set PUID and PGID (with user: \"0:0\") to run as the registry's uid instead")
+        return
+    gid = pgid if pgid is not None else puid
+    state_dir = env.get("UI_STATE_DIR")
+    if state_dir and os.path.isdir(state_dir):  # so the new uid can write state.json; ponytail: one level deep, the dir holds only state.json
+        for path in [state_dir] + [os.path.join(state_dir, e) for e in os.listdir(state_dir)]:
+            try:
+                os.chown(path, puid, gid)
+            except OSError as e:
+                log.warning("could not chown %s to %s:%s: %s", path, puid, gid, e)
+    try:
+        os.setgroups([gid])
+    except OSError:
+        os.setgroups([])
+    os.setgid(gid)
+    os.setuid(puid)
+    try:
+        os.setuid(0)
+    except OSError:
+        pass  # good: uid 0 cannot be regained
+    else:
+        sys.exit("failed to drop privileges: uid 0 can still be regained")
+    log.info("dropped privileges to uid %s gid %s", puid, gid)
+
+
 def main(env):
     logging.basicConfig(level=env.get("LOG_LEVEL", "info").upper(), format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    drop_privileges(env)
     try:
         cfg = Config(env)
     except (ValueError, OSError) as e:

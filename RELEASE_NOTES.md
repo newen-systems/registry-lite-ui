@@ -4,6 +4,12 @@ registry-lite-ui is a web UI for a plain `registry:2` that browses, copies, move
 
 `podman-compose up -d` with `compose.yml` (registry and UI), or `podman-compose -f compose.ui.yml up -d` with `REGISTRY_URL` set for a registry that already runs. `docker compose` works the same way. Pin `UI_IMAGE` to a version or a digest in your `.env`.
 
+## Changes in 0.3.14
+
+### New Features
+
+- The UI can now run as any uid and gid, to match a registry that does not run as the image's 65534. Start the container as root (`user: "0:0"`) and set `PUID`/`PGID` (or `UID`/`GID`, with `PUID`/`PGID` winning): at the very start, before it reads any key or secret or binds, the UI chowns `UI_STATE_DIR` to that id and drops to it for good, then verifies it can no longer regain uid 0. The image is distroless with no shell, so this is done in Python, not an entrypoint. Running as root with no `PUID` keeps the old behaviour but logs a warning; a non-root start with a `PUID` that already matches is fine, and one that does not is logged with how to switch (start as root). Setting `user: "UID:GID"` in compose still works too, with `/state` mounted so that uid can write it. The README env table and the compose files carry the example. Non-integer ids fail at start with a clear message
+
 ## Changes in 0.3.13
 
 ### New Features

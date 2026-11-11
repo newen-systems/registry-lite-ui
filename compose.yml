@@ -36,6 +36,11 @@ services:
     build:
       context: .
       dockerfile: Containerfile
+    # Runs as the image's uid 65534 by default, which matches the registry here. If your registry runs as another
+    # uid (for example a host storage dir owned by it), start the UI as root and let it drop to that uid, so it can
+    # read the storage without staying root. Uncomment both lines and set the ids to the registry's:
+    #   user: "0:0"            # start as root only so the UI can chown /state and drop privileges
+    #   environment: PUID: "1000"; PGID: "1000"   # merge these two keys into the environment block below
     ports: ["${UI_BIND:-127.0.0.1}:${UI_PORT:-8080}:8080"]
     environment:
       REGISTRY_URL: http://registry:5000
