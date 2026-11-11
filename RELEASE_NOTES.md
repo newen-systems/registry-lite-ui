@@ -9,6 +9,8 @@ registry-lite-ui is a web UI for a plain `registry:2` that browses, copies, move
 ### New Features
 
 - A bulk delete is no longer capped at 100 tags. The Tags view and a repository's Storage tab send the selection in calls of at most 100 (the server's cap), indexes first and every tag of one digest in the same call, and show the progress ("call 1 of 2")
+- The Storage view keeps your Map or Table choice across a page reload, in the browser's saved preferences, for the Storage view and a folder's Storage tab alike
+- In the Storage table, a row's name is the one way into it: a folder name opens that folder in the view you are using, a repository name opens its Storage tab, where its tags are picked. The "Show in map" and "Select tags" links are gone: "Select tags" went to the same page as the repository name, and "Show in map" opened the folder but stayed on the table
 - Deleting every tag in a repository at once (Select all, or a quick select that picks them all) asks you to type the repository name before Delete is enabled
 
 ### Bug Fixes
