@@ -1961,6 +1961,21 @@ class RecycleBin(unittest.TestCase):
         self.assertEqual([e["tag"] for e in self.bin.list()], ["latest"])
         self.assertEqual(self.c.puts, [("a/app", "1")])
 
+    def test_a_restored_tag_is_recorded_as_restored_with_its_old_times(self):
+        self.state.baselined = True
+        self.state.update({"a/app"}, {"a/app:1": self.digest, "a/app:latest": self.digest})
+        self.clk.now = 2000.0
+        R.delete(self.c, "a/app", self.digest, bin=self.bin)
+        self.state.update({"a/app"}, {})  # the walk sees both tags gone
+        self.clk.now = 3000.0
+        self.bin.restore(self.c, next(e["id"] for e in self.bin.list() if e["tag"] == "1"))
+        other = self.c.add("a/app", image_body(D("1")), IMG, ["2"])  # a real push in the same walk
+        ev = self.state.update({"a/app"}, {"a/app:1": self.digest, "a/app:2": other})
+        self.assertEqual(sorted((e["ref"], e["type"]) for e in ev), [("a/app:1", "restored"), ("a/app:2", "new")])
+        self.assertEqual((self.state.tags["a/app:1"]["changed"], self.state.tags["a/app:1"]["first"]), (1000.0, 1000.0))  # back in its place
+        self.assertEqual(self.state.tags["a/app:2"]["changed"], 3000.0)
+        self.assertTrue(P.well_formed(json.loads(self.state.dump())))  # a state file with a restored event reads back
+
     def test_restore_checks_every_blob_and_changes_nothing_when_one_is_gone(self):
         R.delete(self.c, "a/app", self.digest, bin=self.bin)
         self.c.blobs.discard(D("2"))  # garbage collection ran

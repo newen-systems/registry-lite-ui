@@ -18,6 +18,7 @@ MAX_BIN_BYTES = 3 << 20  # base64 manifests kept for the bin, so it cannot push 
 MAX_CONFIG = 1 << 20  # largest image config read for a seed time
 MAX_STATE_BYTES = 8 << 20  # a state file over this is neither written nor read
 KINDS = ("image", "helm", "artifact")
+RESTORE_WAIT = 3600  # seconds a restored tag is waited for by the walks, after which it would be recorded as new
 
 
 def diff(old, new, now):
@@ -43,7 +44,7 @@ def well_formed(data):
             and all(isinstance(k, str) and isinstance(v, dict) and isinstance(v.get("index"), bool) and v.get("kind") in KINDS
                     for k, v in data.get("meta", {}).items())
             and all(isinstance(e, dict) and isinstance(e.get("ref"), str) and num(e.get("t")) and isinstance(e.get("seq"), int)
-                    and e.get("type") in ("new", "retagged", "deleted") for e in data["events"]))
+                    and e.get("type") in ("new", "retagged", "deleted", "restored") for e in data["events"]))
 
 
 class Throttle:
@@ -76,6 +77,7 @@ class State:
         self.bin, self.binm, self.bin_days = [], {}, 0  # recycle bin entries (bin.py), and the retention in days, 0 while the bin is off
         self.usage = []  # history points from usage.history_point, thinned by usage.thin
         self.empty = set()  # repositories a full walk found with no tags. In memory only, so unknown again after a restart.
+        self.restoring = {}  # ref -> (digest, changed, first, when): tags Restore put back, which the next walk records as restored. In memory only.
         self.since = clock()
         self.cond = threading.Condition()
         self.saved, self.saved_at, self.dirty = None, 0, False
@@ -94,9 +96,14 @@ class State:
             self.empty = (self.empty | (scanned - seen)) - seen - set(gone)
             old = {k: v["digest"] for k, v in self.tags.items() if repo_of(k) in scanned or repo_of(k) in gone}
             ev = diff(old, observed, now)
+            self.restoring = {k: v for k, v in self.restoring.items() if now - v[3] < RESTORE_WAIT}
             for e in ev:
+                back = self.restoring.pop(e["ref"], None) if e["type"] == "new" else None
                 if e["type"] == "deleted":
                     del self.tags[e["ref"]]
+                elif back and back[0] == e["digest"]:  # the same tag and digest a Restore pushed: its old place, not a push
+                    e["type"] = "restored"
+                    self.tags[e["ref"]] = {"digest": e["digest"], "first": now if back[2] is None else back[2], "changed": now if back[1] is None else back[1]}
                 else:
                     changed = now  # seen by a walk: the push, to within one walk
                     if not self.baselined:  # already there when the UI started: only the tag link's file time says when, else 0 (unknown)
@@ -121,6 +128,11 @@ class State:
             if ev and self.baselined:
                 self.cond.notify_all()
         return ev
+
+    def mark_restored(self, ref, digest, changed, first):
+        """Restore put ref back at digest. changed and first are the tag's times before it went to the Bin, None if unknown."""
+        with self.cond:
+            self.restoring[ref] = (digest, changed, first, self.clock())
 
     def known(self, digest):
         with self.cond:
