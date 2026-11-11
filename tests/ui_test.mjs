@@ -232,3 +232,16 @@ test("a bulk delete of more than the cap goes in calls of at most the cap, index
   const big = batches(Array.from({ length: 150 }, (_, i) => ({ tag: "t" + i, digest: "same" })), 100); // one digest over the cap is split
   assert.deepEqual(big.map((b) => b.length), [100, 50]);
 });
+
+test("References lists every other tag on the digest, here and in other repositories, never the tag itself", () => {
+  const el = (tag, props, ...kids) => ({ tag, ...props, kids });
+  const plural = (n, one, many = one + "s") => `${n} ${n === 1 ? one : many}`;
+  const repoOf = (ref) => ref.slice(0, ref.lastIndexOf(":"));
+  const refs = load("referencesSection", { el, plural, repoOf });
+  const [, p, chips] = refs("a/app", { kind: "tag", tag: "v1" }, { refs: ["a/app:latest", "a/app:v1", "b/copy:prod"], more: 0 });
+  assert.deepEqual(chips.kids.map((k) => k.href), ["#/repo/a/app:latest", "#/repo/b/copy:prod"]);
+  assert.match(p.textContent, /^2 other tags in 2 repositories point at this digest/);
+  const [, alone] = refs("a/app", { kind: "tag", tag: "v1" }, { refs: ["a/app:v1"], more: 0 });
+  assert.match(alone.textContent, /^No other tag/);
+  assert.deepEqual(refs("a/app", { kind: "tag", tag: "v1" }, null), []); // an older server
+});
