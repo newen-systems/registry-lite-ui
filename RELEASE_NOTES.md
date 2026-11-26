@@ -4,6 +4,12 @@ registry-lite-ui is a web UI for a plain `registry:2` that browses, copies, move
 
 `podman-compose up -d` with `compose.yml` (registry and UI), or `podman-compose -f compose.ui.yml up -d` with `REGISTRY_URL` set for a registry that already runs. `docker compose` works the same way. Pin `UI_IMAGE` to a version or a digest in your `.env`.
 
+## Changes in 0.3.18
+
+### Bug Fixes
+
+- A tag restored from the Bin no longer jumps to the top of its repository's tag list right after Restore. The tag list was read before the poller had recorded the restore, so the tag had no change time and sorted as the newest until the next sync. The tag list now uses the time the tag had before it went to the Bin until the poller records it
+
 ## Changes in 0.3.17
 
 ### New Features
