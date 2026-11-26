@@ -134,6 +134,15 @@ class State:
         with self.cond:
             self.restoring[ref] = (digest, changed, first, self.clock())
 
+    def changed(self, ref, digest):
+        """When ref took its digest. For a tag Restore just put back, before a walk records it, its time from before the Bin, so the
+        tag list does not show it as new (at the top) until the next sync."""
+        with self.cond:
+            if ref in self.tags:
+                return self.tags[ref].get("changed")
+            back = self.restoring.get(ref)
+            return back[1] if back and back[0] == digest else None
+
     def known(self, digest):
         with self.cond:
             return digest in self.meta

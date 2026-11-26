@@ -249,7 +249,7 @@ def routes(cfg):
             raise
         for t in names:
             _, mtype, digest = c.manifest(repo, t, head=True)
-            row = {"tag": t, "digest": digest, "changed": cfg.state.tags.get(f"{repo}:{t}", {}).get("changed"), "index": mtype in R.INDEX_TYPES}
+            row = {"tag": t, "digest": digest, "changed": cfg.state.changed(f"{repo}:{t}", digest), "index": mtype in R.INDEX_TYPES}
             kind = cfg.state.traits(digest).get("kind")  # null until the poller has read the manifest
             rows.append({**row, "kind": kind})
         return rows

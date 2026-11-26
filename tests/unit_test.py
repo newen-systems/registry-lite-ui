@@ -1224,6 +1224,12 @@ class Routes(unittest.TestCase):
         self.assertIn("push in progress", e.exception.message)
         self.assertEqual(self.get["/api/recent"]({"limit": ["-5"]})["events"], [])
 
+    def test_a_restored_tag_keeps_its_time_before_the_walk_records_it(self):
+        self.cfg.state.mark_restored("a/app:latest", D("a"), 1000, 900)  # Restore pushed it back, no walk yet
+        self.assertEqual(self.get["/api/tags"]({"repo": ["a/app"]})[0]["changed"], 1000)  # not null, which sorts as newest
+        self.cfg.state.mark_restored("a/app:latest", D("b"), 1000, 900)  # another digest there now: unknown
+        self.assertIsNone(self.get["/api/tags"]({"repo": ["a/app"]})[0]["changed"])
+
     def test_tagnames_lists_helm_repositories(self):
         self.cfg.state.update({"charts/app", "img/app"}, {"charts/app:1.0": D("1"), "img/app:1": D("2"), "img/app:2": D("3")})
         self.cfg.state.learn(D("1"), False, "helm")
